@@ -66,6 +66,18 @@ def diag(adres: str = "Roode Wildemanweg 45, Wormerveer"):
     import os, requests
     out = {"key_present": bool(os.environ.get("ANTHROPIC_API_KEY")),
            "vision_model": objecten.MODEL}
+    if out["key_present"]:
+        try:
+            mr = requests.get("https://api.anthropic.com/v1/models",
+                              headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"],
+                                       "anthropic-version": "2023-06-01"}, timeout=20)
+            out["models_status"] = mr.status_code
+            if mr.ok:
+                out["models_available"] = [m.get("id") for m in mr.json().get("data", [])]
+            else:
+                out["models_body"] = mr.text[:300]
+        except Exception as e:
+            out["models_error"] = str(e)
     try:
         fps, naam, pids, pdata = gs.footprints_for_address(adres)
         out["adres"] = naam
