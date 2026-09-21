@@ -32,9 +32,54 @@ def _ring_to_local(coords, minx, maxy):
     return [[round(x - minx, 2), round(maxy - y, 2)] for (x, y) in coords]
 
 
-def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, objecten=None, vision_status=None):
+def _largest_polygon(geom):
+    if geom is None or geom.is_empty:
+        return None
+    parts = [g for g in getattr(geom, "geoms", [geom]) if g.geom_type == "Polygon"]
+    return max(parts, key=lambda p: p.area) if parts else None
+
+
+def polys_from_vision(vision_dakvlakken):
+    """Vision-dakvlakken -> shapely rechthoeken (RD) uit hun 4 hoeken."""
+    from shapely.geometry import Polygon
+    out = []
+    for d in vision_dakvlakken or []:
+        pts = d.get("poly_rd")
+        if pts and len(pts) >= 3:
+            try:
+                p = Polygon(pts).buffer(0)
+                if p.area > 0:
+                    out.append(p)
+            except Exception:
+                pass
+    return out
+
+
+def split_dakvlakken(footprint, rects, min_area=5.0):
+    """Snij Vision-deelvlakken uit het pand. Geeft [hoofdvlak, uitbouw, ...]
+    (maatvaste polygonen), of [footprint] als er niks bruikbaars is."""
+    fa = footprint.area
+    exts, claimed = [], None
+    for rect in sorted(rects, key=lambda r: r.area):        # klein eerst
+        inter = _largest_polygon(footprint.intersection(rect))
+        if inter is None or inter.area < min_area or inter.area > 0.6 * fa:
+            continue
+        if claimed is not None:
+            inter = _largest_polygon(inter.difference(claimed))
+        if inter and inter.area >= min_area:
+            exts.append(inter)
+            claimed = inter if claimed is None else claimed.union(inter)
+    if not exts:
+        return [footprint]
+    main = _largest_polygon(footprint.difference(claimed)) or footprint
+    return [main] + exts
+
+
+def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, objecten=None, vision_status=None, dakvlakken_expliciet=None):
     """
     footprints : list[shapely Polygon] in RD (meters)
+    dakvlakken_expliciet : expliciete deelvlak-polygonen (uit Vision-splitsing);
+                 overschrijft de standaard pand-splitsing.
     enrich     : dict van dak_eigenschappen() (mag leeg)
     panddata   : dict van footprints_for_address() (bouwjaar, status)
     objecten   : list uit objecten.analyse() (Vision), elk met rd + type + zekerheid
@@ -44,11 +89,15 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
     panddata = panddata or {}
     meta = meta or {}
     objecten = objecten or []
-    union = unary_union([f.buffer(0) for f in footprints])   # clean + merge
-    parts = list(getattr(union, "geoms", [union]))
+    if dakvlakken_expliciet:
+        parts = [p.buffer(0) for p in dakvlakken_expliciet]
+        union = unary_union(parts)
+    else:
+        union = unary_union([f.buffer(0) for f in footprints])   # clean + merge
+        parts = list(getattr(union, "geoms", [union]))
 
     area_m2  = round(sum(p.area for p in parts), 2)           # ECHTE oppervlak (A)
-    perim_m1 = round(sum(p.exterior.length for p in parts), 2)  # omtrek dakrand (A)
+    perim_m1 = round(sum(g.exterior.length for g in getattr(union, "geoms", [union])), 2)
 
     minx, miny, maxx, maxy = union.bounds
     lengte = round(maxx - minx, 2)      # horizontaal (O-W)
@@ -175,23 +224,32 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
     }
 
 
-def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=None, vision_status=None):
-    """Meerpagina-opbouw: OVERZICHT + één pagina per (geometrisch) dakvlak.
-    Geeft list van {spec, footprints, objecten} — de caller genereert per
-    pagina de luchtfoto en zet 'm in spec['dakvisual']."""
+def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=None,
+                 vision_status=None, dakvlakken=None):
+    """OVERZICHT + één pagina per dakvlak. `dakvlakken` = expliciete deelvlak-
+    polygonen (uit Vision-splitsing); zonder dat valt hij terug op de panden.
+    Geeft list van {spec, footprint, objecten, label, dakvlakken}."""
     from shapely.geometry import Point
     objecten = objecten or []
+    union = unary_union([f.buffer(0) for f in footprints])
+    polys = dakvlakken if dakvlakken else list(getattr(union, "geoms", [union]))
+    gelabeld = [(chr(65 + i), p) for i, p in enumerate(polys)]
+
     ov = build(footprints, enrich=enrich, panddata=panddata, meta=meta,
-               objecten=objecten, vision_status=vision_status)
+               objecten=objecten, vision_status=vision_status,
+               dakvlakken_expliciet=(polys if dakvlakken else None))
     ov["pagina_label"] = "OVERZICHT"
-    paginas = [{"spec": ov, "footprints": footprints, "objecten": objecten}]
-    if len(footprints) > 1:
-        for i, f in enumerate(footprints):
+    paginas = [{"spec": ov, "footprint": union, "objecten": objecten,
+                "dakvlakken": gelabeld, "label": "A"}]
+
+    if len(polys) > 1:
+        for L, poly in gelabeld:
             obj_i = [o for o in objecten
-                     if o.get("rd") and f.buffer(0.5).contains(Point(*o["rd"]))]
-            sp = build([f], enrich=enrich, panddata=panddata, meta=meta,
+                     if o.get("rd") and poly.buffer(0.5).contains(Point(*o["rd"]))]
+            sp = build([poly], enrich=enrich, panddata=panddata, meta=meta,
                        objecten=obj_i, vision_status=vision_status)
-            sp["pagina_label"] = f"DAKVLAK {chr(65+i)}"
-            sp["meta"]["regel"] = f"Dakvlak {chr(65+i)} \u00b7 {sp['oppervlakte']['totaal_m2']:.0f} m\u00b2"
-            paginas.append({"spec": sp, "footprints": [f], "objecten": obj_i})
+            sp["pagina_label"] = f"DAKVLAK {L}"
+            sp["meta"]["regel"] = f"Dakvlak {L} \u00b7 {sp['oppervlakte']['totaal_m2']:.0f} m\u00b2"
+            paginas.append({"spec": sp, "footprint": poly, "objecten": obj_i,
+                            "dakvlakken": None, "label": L})
     return paginas

@@ -48,29 +48,34 @@ def main():
     union = unary_union([f.buffer(0) for f in footprints])
     base = args.out.rsplit(".", 1)[0]
 
-    objecten_rd, vision_status = [], "luchtfoto uit"
+    objecten_rd, vision_status, dakvlak_polys = [], "luchtfoto uit", None
     if args.luchtfoto:
         ov = f"{base}_ov.png"
         mlf = lf.haal(union.bounds, ov, footprint=union)
         if args.vision:
-            res = objmod.analyse(ov, bbox_rd=mlf["bbox_rd"])
+            res = objmod.analyse(ov, frame=mlf["frame"])
             objecten_rd = res.get("objecten", [])
             vision_status = res.get("vision")
-            print(f"  vision: {vision_status} -> {len(objecten_rd)} objecten", file=sys.stderr)
+            rects = bd.polys_from_vision(res.get("dakvlakken", []))
+            if rects:
+                dakvlak_polys = bd.split_dakvlakken(union, rects)
+            print(f"  vision: {vision_status} -> {len(objecten_rd)} objecten, "
+                  f"{len(dakvlak_polys or [])} dakvlakken", file=sys.stderr)
         else:
             vision_status = "vision uit (verzoek)"
 
     paginas = bd.bouw_paginas(footprints, enrich=enrich, panddata=panddata,
-                              meta=meta, objecten=objecten_rd, vision_status=vision_status)
+                              meta=meta, objecten=objecten_rd,
+                              vision_status=vision_status, dakvlakken=dakvlak_polys)
 
     if args.luchtfoto:
         opstand = {"hoog": enrich.get("opstand_hoog_mm"),
                    "laag": enrich.get("opstand_laag_mm")}
         for i, p in enumerate(paginas):
-            u = unary_union([f.buffer(0) for f in p["footprints"]])
+            fp = p["footprint"]
             img = f"{base}_p{i}.png"
-            mlf = lf.haal(u.bounds, img, footprint=u, objecten=p["objecten"],
-                          opstand=opstand)
+            mlf = lf.haal(fp.bounds, img, footprint=fp, objecten=p["objecten"],
+                          opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"])
             p["spec"]["dakvisual"].update({"type": "image", "bestand": img,
                 "onderschrift": f"PDOK-luchtfoto ({mlf['layer']}) met meet-omtrek"
                                 + (" en objecten (Vision)" if p["objecten"] else "")})

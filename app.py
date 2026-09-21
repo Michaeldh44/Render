@@ -68,9 +68,13 @@ def diag(adres: str = "Roode Wildemanweg 45, Wormerveer"):
            "vision_model": objecten.MODEL}
     if out["key_present"]:
         try:
+            mh = {"x-api-key": os.environ["ANTHROPIC_API_KEY"],
+                  "anthropic-version": "2023-06-01"}
+            ws = os.environ.get("ANTHROPIC_WORKSPACE_ID")
+            if ws:
+                mh["anthropic-workspace-id"] = ws
             mr = requests.get("https://api.anthropic.com/v1/models",
-                              headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"],
-                                       "anthropic-version": "2023-06-01"}, timeout=20)
+                              headers=mh, timeout=20)
             out["models_status"] = mr.status_code
             if mr.ok:
                 out["models_available"] = [m.get("id") for m in mr.json().get("data", [])]
@@ -108,7 +112,7 @@ def diag(adres: str = "Roode Wildemanweg 45, Wormerveer"):
             u = unary_union([f.buffer(0) for f in fps])
             img = "/tmp/diag_ov.png"
             m = lf.haal(u.bounds, img, footprint=u)
-            out["vision_test"] = objecten.analyse(img, bbox_rd=m["bbox_rd"]).get("vision")
+            out["vision_test"] = objecten.analyse(img, frame=m["frame"]).get("vision")
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"
     return out
@@ -220,30 +224,34 @@ def specblad(req: SpecbladReq):
         union = unary_union([f.buffer(0) for f in footprints])
 
         # 1) overzichtsfoto (voor Vision) + Vision-analyse
-        objecten_rd, vision_status = [], "luchtfoto uit"
+        objecten_rd, vision_status, dakvlak_polys = [], "luchtfoto uit", None
         if req.luchtfoto:
             ov_img = f"/tmp/{req.ref}_ov.png"
             meta_lf = lf.haal(union.bounds, ov_img, footprint=union)
             if req.vision:
-                res = objecten.analyse(ov_img, bbox_rd=meta_lf["bbox_rd"])
+                res = objecten.analyse(ov_img, frame=meta_lf["frame"])
                 objecten_rd = res.get("objecten", [])
                 vision_status = res.get("vision")
+                rects = bd.polys_from_vision(res.get("dakvlakken", []))
+                if rects:
+                    dakvlak_polys = bd.split_dakvlakken(union, rects)
             else:
                 vision_status = "vision uit (verzoek)"
 
         # 2) meerpagina-opbouw (overzicht + per dakvlak)
         paginas = bd.bouw_paginas(footprints, enrich=enrich, panddata=panddata,
-                                  meta=meta, objecten=objecten_rd, vision_status=vision_status)
+                                  meta=meta, objecten=objecten_rd,
+                                  vision_status=vision_status, dakvlakken=dakvlak_polys)
 
         # 3) per pagina de luchtfoto met objecten/omtrek
         if req.luchtfoto:
             opstand = {"hoog": enrich.get("opstand_hoog_mm"),
                        "laag": enrich.get("opstand_laag_mm")}
             for i, p in enumerate(paginas):
-                u = unary_union([f.buffer(0) for f in p["footprints"]])
+                fp = p["footprint"]
                 img = f"/tmp/{req.ref}_p{i}.png"
-                mlf = lf.haal(u.bounds, img, footprint=u, objecten=p["objecten"],
-                              opstand=opstand)
+                mlf = lf.haal(fp.bounds, img, footprint=fp, objecten=p["objecten"],
+                              opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"])
                 p["spec"]["dakvisual"].update({
                     "type": "image", "bestand": img,
                     "onderschrift": f"PDOK-luchtfoto ({mlf['layer']}) met meet-omtrek"

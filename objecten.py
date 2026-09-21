@@ -49,20 +49,25 @@ def _extract_json(txt):
         return {"objecten": [], "dakvlakken": []}
 
 
-def _frac_to_rd(o, bbox):
-    """Zet fractie-coördinaten (0..1, y omlaag) om naar RD (x,y) + meters."""
-    if not bbox:
+def _fp_to_rd(xf, yf, frame):
+    ox, oy = frame["o"]; dux, duy = frame["du"]; dvx, dvy = frame["dv"]
+    return (ox + xf*dux + yf*dvx, oy + xf*duy + yf*dvy)
+
+
+def _frac_to_rd(o, frame):
+    """Zet fractie-coördinaten (0..1 van het beeld) om naar RD via het
+    beeld-frame {o, du, dv} = RD van de beeldhoeken."""
+    if not frame:
         return None
-    minx, miny, maxx, maxy = bbox
-    w, h = maxx - minx, maxy - miny
-    x = minx + float(o.get("x_frac", 0.5)) * w
-    y = maxy - float(o.get("y_frac", 0.5)) * h          # y omklappen
-    bw = float(o.get("breedte_frac", 0) or 0) * w
-    bh = float(o.get("hoogte_frac", 0) or 0) * h
+    import math
+    dux, duy = frame["du"]; dvx, dvy = frame["dv"]
+    x, y = _fp_to_rd(float(o.get("x_frac", 0.5)), float(o.get("y_frac", 0.5)), frame)
+    bw = float(o.get("breedte_frac", 0) or 0) * math.hypot(dux, duy)
+    bh = float(o.get("hoogte_frac", 0) or 0) * math.hypot(dvx, dvy)
     return {"rd": (x, y), "grootte_m": (round(bw, 2), round(bh, 2))}
 
 
-def analyse(image_path, bbox_rd=None):
+def analyse(image_path, frame=None):
     """Geef {objecten:[...], dakvlakken:[...], vision:status}."""
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
@@ -72,10 +77,13 @@ def analyse(image_path, bbox_rd=None):
     body = {"model": MODEL, "max_tokens": 1500, "messages": [{"role": "user", "content": [
         {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
         {"type": "text", "text": PROMPT}]}]}
+    headers = {"x-api-key": key, "anthropic-version": "2023-06-01",
+               "content-type": "application/json"}
+    ws = os.environ.get("ANTHROPIC_WORKSPACE_ID")   # nodig bij een org-key
+    if ws:
+        headers["anthropic-workspace-id"] = ws
     try:
-        r = requests.post(API_URL, headers={
-            "x-api-key": key, "anthropic-version": "2023-06-01",
-            "content-type": "application/json"}, json=body, timeout=90)
+        r = requests.post(API_URL, headers=headers, json=body, timeout=90)
     except requests.RequestException as e:
         return {"objecten": [], "dakvlakken": [], "vision": f"netwerkfout: {e}"}
     if r.status_code != 200:
@@ -89,15 +97,22 @@ def analyse(image_path, bbox_rd=None):
 
     objecten = []
     for o in js.get("objecten", []):
-        geo = _frac_to_rd(o, bbox_rd)
+        geo = _frac_to_rd(o, frame)
         objecten.append({"type": o.get("type", "overig"),
                          "omschrijving": o.get("omschrijving", ""),
                          "zekerheid": o.get("zekerheid", "laag"),
                          **(geo or {})})
     dakvlakken = []
     for d in js.get("dakvlakken", []):
-        geo = _frac_to_rd(d, bbox_rd)
+        geo = _frac_to_rd(d, frame)
+        poly_rd = None
+        if frame:
+            xf, yf = float(d.get("x_frac", 0.5)), float(d.get("y_frac", 0.5))
+            wf = float(d.get("breedte_frac", 0) or 0) / 2
+            hf = float(d.get("hoogte_frac", 0) or 0) / 2
+            poly_rd = [_fp_to_rd(xf-wf, yf-hf, frame), _fp_to_rd(xf+wf, yf-hf, frame),
+                       _fp_to_rd(xf+wf, yf+hf, frame), _fp_to_rd(xf-wf, yf+hf, frame)]
         dakvlakken.append({"label": d.get("label", "?"),
                            "omschrijving": d.get("omschrijving", ""),
-                           **(geo or {})})
+                           "poly_rd": poly_rd, **(geo or {})})
     return {"objecten": objecten, "dakvlakken": dakvlakken, "vision": "ok"}
