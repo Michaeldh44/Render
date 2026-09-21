@@ -32,7 +32,7 @@ def _ring_to_local(coords, minx, maxy):
     return [[round(x - minx, 2), round(maxy - y, 2)] for (x, y) in coords]
 
 
-def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, objecten=None):
+def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, objecten=None, vision_status=None):
     """
     footprints : list[shapely Polygon] in RD (meters)
     enrich     : dict van dak_eigenschappen() (mag leeg)
@@ -101,15 +101,18 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
     else:
         dakgegevens.append({"label": "Dakhoogte (boven maaiveld)",
                             "waarde": "onbekend (3D BAG niet beschikbaar)", "eenheid": ""})
-    # opstand: aanname uit 3D BAG hoogte-percentielen, anders n.t.b.
-    if enrich.get("opstand_mm"):
-        dakgegevens.append({"label": "Opstand / dakrand (aanname 3D BAG)",
-                            "waarde": f"~ {enrich['opstand_mm']}", "eenheid": "mm",
-                            "maatklasse": "B"})
-    else:
+    # opstand: hoogste en laagste dakrand uit 3D BAG hoogteverdeling
+    oh, ol = enrich.get("opstand_hoog_mm"), enrich.get("opstand_laag_mm")
+    if oh:
+        dakgegevens.append({"label": "Opstand / dakrand \u2014 hoogste (3D BAG)",
+                            "waarde": f"~ {oh}", "eenheid": "mm", "maatklasse": "B"})
+    if ol is not None:
+        dakgegevens.append({"label": "Opstand / dakrand \u2014 laagste (3D BAG)",
+                            "waarde": f"~ {ol}", "eenheid": "mm", "maatklasse": "B"})
+    if not oh and ol is None:
         dakgegevens.append({"label": "Opstand / dakrand (hoogte)",
-                            "waarde": "n.t.b. (opgave/inmeting)", "eenheid": "",
-                            "maatklasse": "C"})
+                            "waarde": "n.t.b. (3D BAG niet beschikbaar; typisch 150\u2013300 mm)",
+                            "eenheid": "", "maatklasse": "C"})
     dakgegevens += [
         {"label": "Afschot", "waarde": "n.t.b. (AHN-koppeling volgt)",
          "eenheid": "", "maatklasse": "C"},
@@ -121,8 +124,9 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
         dakgegevens.append({"label": "Objecten op dak (Vision)", "waarde": samenvatting,
                             "eenheid": "", "maatklasse": "C"})
     else:
-        dakgegevens.append({"label": "HWA-punten / koepels / doorvoeren",
-                            "waarde": "n.t.b. (opgave / Vision uit)", "eenheid": ""})
+        vs = vision_status or "uit"
+        dakgegevens.append({"label": "Objecten op dak (Vision)",
+                            "waarde": f"geen herkend \u00b7 status: {vs}", "eenheid": ""})
 
     opbouw = opbouw or {
         "kop": "OPBOUW (advies \u2014 nog niet gemeten)",
@@ -150,7 +154,7 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
             "noord_boven": True,
             "dakvlakken": dakvlakken,
             "onderdelen": onderdelen,
-            "opstand": {"toon": True, "hoogte_mm": enrich.get("opstand_mm")},
+            "opstand": {"toon": True, "hoogte_mm": enrich.get("opstand_hoog_mm")},
         },
         "objecten_lijst": objecten_lijst if objecten_lijst else None,
         "dakgegevens": dakgegevens,
@@ -171,20 +175,22 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
     }
 
 
-def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=None):
+def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=None, vision_status=None):
     """Meerpagina-opbouw: OVERZICHT + één pagina per (geometrisch) dakvlak.
     Geeft list van {spec, footprints, objecten} — de caller genereert per
     pagina de luchtfoto en zet 'm in spec['dakvisual']."""
     from shapely.geometry import Point
     objecten = objecten or []
-    ov = build(footprints, enrich=enrich, panddata=panddata, meta=meta, objecten=objecten)
+    ov = build(footprints, enrich=enrich, panddata=panddata, meta=meta,
+               objecten=objecten, vision_status=vision_status)
     ov["pagina_label"] = "OVERZICHT"
     paginas = [{"spec": ov, "footprints": footprints, "objecten": objecten}]
     if len(footprints) > 1:
         for i, f in enumerate(footprints):
             obj_i = [o for o in objecten
                      if o.get("rd") and f.buffer(0.5).contains(Point(*o["rd"]))]
-            sp = build([f], enrich=enrich, panddata=panddata, meta=meta, objecten=obj_i)
+            sp = build([f], enrich=enrich, panddata=panddata, meta=meta,
+                       objecten=obj_i, vision_status=vision_status)
             sp["pagina_label"] = f"DAKVLAK {chr(65+i)}"
             sp["meta"]["regel"] = f"Dakvlak {chr(65+i)} \u00b7 {sp['oppervlakte']['totaal_m2']:.0f} m\u00b2"
             paginas.append({"spec": sp, "footprints": [f], "objecten": obj_i})

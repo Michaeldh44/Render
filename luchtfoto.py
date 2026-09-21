@@ -79,7 +79,7 @@ def _getmap(bounds, W, H):
     return Image.open(io.BytesIO(r.content)).convert("RGB")
 
 
-def haal(bounds, outfile, footprint=None, objecten=None, stand_in=False):
+def haal(bounds, outfile, footprint=None, objecten=None, opstand=None, stand_in=False):
     b = _padded(bounds)
     W, H = _dims(b)
     img = _standin(W, H) if stand_in else _getmap(b, W, H)
@@ -99,23 +99,44 @@ def haal(bounds, outfile, footprint=None, objecten=None, stand_in=False):
                   outline=(0, 0, 0, 255), width=2)
         _label(d, (cx-6, cy-11), "A", size=22)
 
-        # omhullende-maatlijnen langs de footprint-bbox
+        # --- omhullende-kader (rechthoek) waar de maatlijnen op uitlijnen ---
         fminx, fminy, fmaxx, fmaxy = geom.bounds
         lengte, breedte = fmaxx - fminx, fmaxy - fminy
-        tlx, tly = to_px(fminx, fmaxy)
-        trx, _ = to_px(fmaxx, fmaxy)
-        ty = max(tly - 16, 10)
+        tlx, tly = to_px(fminx, fmaxy)      # linksboven
+        trx, _t = to_px(fmaxx, fmaxy)       # rechtsboven
+        _l, lby = to_px(fminx, fminy)       # linksonder
+        # dun licht kader precies op de bounding box
+        for (xa, ya, xb, yb) in [(tlx, tly, trx, tly), (tlx, lby, trx, lby),
+                                 (tlx, tly, tlx, lby), (trx, tly, trx, lby)]:
+            d.line([(xa, ya), (xb, yb)], fill=(40, 108, 176, 130), width=1)
+
+        GAP = 20                            # vaste afstand kader -> maatlijn
+        ty = tly - GAP
         d.line([(tlx, ty), (trx, ty)], fill=BLAUW, width=3)
         for xx in (tlx, trx):
+            d.line([(xx, tly), (xx, ty)], fill=(40, 108, 176, 130), width=1)  # aanhaal
             d.line([(xx, ty-6), (xx, ty+6)], fill=BLAUW, width=3)
-        _label(d, ((tlx+trx)//2 - 60, ty-26), f"{lengte:.2f} m omhullend", size=19, fg=BLAUW)
+        _label(d, ((tlx+trx)//2 - 62, ty-26), f"{lengte:.2f} m omhullend", size=19, fg=BLAUW)
 
-        lx = max(tlx - 16, 10)
-        _, lby = to_px(fminx, fminy)
+        lx = tlx - GAP
         d.line([(lx, tly), (lx, lby)], fill=BLAUW, width=3)
         for yy in (tly, lby):
+            d.line([(tlx, yy), (lx, yy)], fill=(40, 108, 176, 130), width=1)
             d.line([(lx-6, yy), (lx+6, yy)], fill=BLAUW, width=3)
         _label(d, (lx+8, (tly+lby)//2 - 10), f"{breedte:.2f} m", size=19, fg=BLAUW)
+
+        # --- opstand-aanduiding op de dakrand ---
+        if opstand and (opstand.get("hoog") or opstand.get("laag")):
+            hoog, laag = opstand.get("hoog"), opstand.get("laag")
+            txt = "opstand (3D BAG): "
+            txt += f"hoog ~{hoog} mm" if hoog else ""
+            txt += (" \u00b7 " if hoog and laag is not None else "")
+            txt += f"laag ~{laag} mm" if laag is not None else ""
+            # leader van label naar een punt op de dakrand (rechtsonder)
+            ax, ay = trx, lby
+            lxp, lyp = trx - 150, lby + 34
+            d.line([(ax, ay), (lxp+130, lyp-6)], fill=(120, 60, 20, 255), width=2)
+            _label(d, (lxp, lyp), txt, size=15, fg=(120, 60, 20, 255))
 
     # objecten (Vision) als genummerde vakjes, kleur naar zekerheid
     kleur = {"hoog": (47, 133, 90, 255), "midden": (183, 121, 31, 255),

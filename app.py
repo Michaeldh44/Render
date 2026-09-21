@@ -208,24 +208,30 @@ def specblad(req: SpecbladReq):
         union = unary_union([f.buffer(0) for f in footprints])
 
         # 1) overzichtsfoto (voor Vision) + Vision-analyse
-        objecten_rd = []
+        objecten_rd, vision_status = [], "luchtfoto uit"
         if req.luchtfoto:
             ov_img = f"/tmp/{req.ref}_ov.png"
             meta_lf = lf.haal(union.bounds, ov_img, footprint=union)
             if req.vision:
                 res = objecten.analyse(ov_img, bbox_rd=meta_lf["bbox_rd"])
                 objecten_rd = res.get("objecten", [])
+                vision_status = res.get("vision")
+            else:
+                vision_status = "vision uit (verzoek)"
 
         # 2) meerpagina-opbouw (overzicht + per dakvlak)
         paginas = bd.bouw_paginas(footprints, enrich=enrich, panddata=panddata,
-                                  meta=meta, objecten=objecten_rd)
+                                  meta=meta, objecten=objecten_rd, vision_status=vision_status)
 
         # 3) per pagina de luchtfoto met objecten/omtrek
         if req.luchtfoto:
+            opstand = {"hoog": enrich.get("opstand_hoog_mm"),
+                       "laag": enrich.get("opstand_laag_mm")}
             for i, p in enumerate(paginas):
                 u = unary_union([f.buffer(0) for f in p["footprints"]])
                 img = f"/tmp/{req.ref}_p{i}.png"
-                mlf = lf.haal(u.bounds, img, footprint=u, objecten=p["objecten"])
+                mlf = lf.haal(u.bounds, img, footprint=u, objecten=p["objecten"],
+                              opstand=opstand)
                 p["spec"]["dakvisual"].update({
                     "type": "image", "bestand": img,
                     "onderschrift": f"PDOK-luchtfoto ({mlf['layer']}) met meet-omtrek"

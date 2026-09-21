@@ -142,18 +142,24 @@ def dak_eigenschappen(pandid):
             if not attrs:
                 continue
             h50 = _first(attrs, K_H_DAK50)
+            h70 = _first(attrs, K_H_DAK70)
+            hmin = _first(attrs, K_H_DAKMIN)
             hmax = _first(attrs, K_H_DAKMAX)
             hmaai = _first(attrs, K_H_MAAI)
             dakhoogte = round(h50 - hmaai, 2) if h50 is not None and hmaai is not None else None
-            # opstand-aanname: hoogste dakpunten (dakrand) t.o.v. dakvlak-mediaan
-            opstand_mm = None
-            if h50 is not None and hmax is not None:
-                v = round((hmax - h50) * 1000)
-                opstand_mm = v if 20 <= v <= 1500 else None   # sanity-grens
+            # opstand = dakrand boven het dakvlak. Uit de hoogteverdeling:
+            #   hoog  = hoogste dakpunt   boven mediaan dakvlak
+            #   laag  = hoogste dakpunt   boven 70-percentiel (hoger dakdeel)
+            def _mm(a, b):
+                return round((a - b) * 1000) if a is not None and b is not None else None
+            opstand_hoog = _mm(hmax, h50)
+            opstand_laag = _mm(hmax, h70)
             return {
-                "h_dak50_nap": h50, "h_dakmax_nap": hmax, "h_maaiveld_nap": hmaai,
+                "h_dak50_nap": h50, "h_dak70_nap": h70,
+                "h_dakmax_nap": hmax, "h_dakmin_nap": hmin, "h_maaiveld_nap": hmaai,
                 "dakhoogte_m": dakhoogte,
-                "opstand_mm": opstand_mm,
+                "opstand_hoog_mm": opstand_hoog,
+                "opstand_laag_mm": opstand_laag,
                 "dak_type": _first(attrs, K_DAKTYPE),
                 "opp_plat": _first(attrs, K_OPP_PLAT),
                 "opp_schuin": _first(attrs, K_OPP_SCHUIN),
