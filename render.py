@@ -167,10 +167,19 @@ def build_html(spec):
         legenda2 = "buitenmaten = omhullende van het dakvlak · dikke rand = opstand/dakrand · vakjes = koepels/HWA/doorvoeren"
 
     dv = spec["dakvisual"]
-    if dv.get("type") == "image" and dv.get("bestand") and os.path.exists(dv["bestand"]):
-        visual_inner = f'<img src="{_img_data_uri(dv["bestand"])}" alt="luchtfoto"/>'
+    heeft_foto = (dv.get("type") == "image" and dv.get("bestand")
+                  and os.path.exists(dv["bestand"]))
+    if heeft_foto:
+        img = f'<img src="{_img_data_uri(dv["bestand"])}" alt="luchtfoto"/>'
+        cap = (f"DAKVISUAL — {html.escape(dv.get('onderschrift',''))} · noord ~ boven (RD) · "
+               "schaalbalk 5 m")
+        left_html = (f'<div class="mainviz">{img}</div>'
+                     f'<div class="cap">{cap}</div>'
+                     f'<div class="vcap"><span class="warn">{html.escape(dv.get("let_op",""))}</span></div>')
     else:
-        visual_inner = 'DAKVISUAL<br>(luchtfoto / 3D-render — placeholder in deze PoC)'
+        left_html = (f'<div class="draw">{svg}'
+                     f'<div class="cap">schaal {html.escape(spec["geometrie"]["schaal"])} · {legenda}<br>{legenda2}</div></div>'
+                     f'<div class="visual">DAKVISUAL<br>(luchtfoto / 3D-render — placeholder in deze PoC)</div>')
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>
 @page {{ size: A3 landscape; margin: 0; }}
 * {{ box-sizing: border-box; }}
@@ -194,6 +203,10 @@ body {{ margin:0; font-family: Helvetica, Arial, sans-serif; color:#111; }}
            display:flex; align-items:center; justify-content:center; color:#8792a0;
            font-size:9pt; text-align:center; overflow:hidden; }}
 .visual img {{ width:100%; height:100%; object-fit:cover; display:block; }}
+.mainviz {{ border:1px solid #cfd6dd; border-radius:3px; overflow:hidden;
+            background:#eef1f4; height:172mm; display:flex; align-items:center;
+            justify-content:center; }}
+.mainviz img {{ width:100%; height:100%; object-fit:contain; display:block; }}
 .vcap {{ font-size:7.5pt; margin-top:1.5mm; line-height:1.35; }}
 .vcap b {{ color:#111; }} .vcap .warn {{ color:#b45309; }}
 h2 {{ font-size:10.5pt; margin:0 0 1.5mm; border-bottom:1px solid #111; padding-bottom:1mm; }}
@@ -221,12 +234,7 @@ tr.tot td {{ border-top:1.5px solid #111; font-size:10pt; padding-top:1.5mm; }}
   </div>
   <div class="body">
     <div class="left">
-      <div class="draw">{svg}
-        <div class="cap">schaal {html.escape(spec['geometrie']['schaal'])} · {legenda}<br>{legenda2}</div>
-      </div>
-      <div class="visual">{visual_inner}</div>
-      <div class="vcap"><b>{html.escape(dv['onderschrift'])}</b><br>
-        <span class="warn">{html.escape(dv['let_op'])}</span></div>
+      {left_html}
     </div>
     <div class="right">
       <div class="block"><h2>DAKGEGEVENS</h2>

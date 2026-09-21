@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-geo_sources.py  —  DE INVOER-LAAG (draait in JOUW omgeving)  [v0.2]
+geo_sources.py  —  DE INVOER-LAAG (draait in JOUW omgeving)  [v0.3]
 ===================================================================
 adres -> footprint(s) + dak-eigenschappen, uit open data (keyless):
   1. PDOK Locatieserver : adres -> coordinaat (RD) + evt. pand-id(s)
-  2. PDOK BAG WFS       : pand-polygoon  (op id, of op kaartpositie)
-  3. 3D BAG (TU Delft)  : dakhoogte + daktype
+  2. PDOK BAG WFS       : pand-polygoon + bouwjaar (op id of kaartpositie)
+  3. 3D BAG (TU Delft)  : dakhoogte, daktype, hoogte-percentielen -> opstand
 
-v0.2: het pand wordt bij voorkeur op de KAARTPOSITIE opgezocht
-(punt-in-vlak). Dat werkt ook als het 'pandid'-veld in de Locatieserver-
-response ontbreekt -- de oorzaak van de eerdere 404.
+v0.3: 3D BAG-response is een CityJSONFeature; de b3_-attributen zitten
+onder CityObjects[..].attributes. Daaruit ook een opstand-AANNAME
+(hoogste dakpunten t.o.v. dakvlak-mediaan).
 """
 import requests
 from shapely.geometry import shape, Point
@@ -18,9 +18,12 @@ LOCATIESERVER = "https://api.pdok.nl/bzk/locatieserver/search/v3_1"
 BAG_WFS       = "https://service.pdok.nl/lv/bag/wfs/v2_0"
 DRIEDBAG_API  = "https://api.3dbag.nl/collections/pand/items"
 TIMEOUT = 30
-HEADERS = {"User-Agent": "zaanstad-dakscan/0.2 (interne tool)"}
+HEADERS = {"User-Agent": "zaanstad-dakscan/0.3 (interne tool)"}
 
-K_H_DAK   = ["b3_h_dak_50p", "h_dak_50p", "b3_h_dak_70p"]
+K_H_DAK50 = ["b3_h_dak_50p", "h_dak_50p"]
+K_H_DAK70 = ["b3_h_dak_70p", "h_dak_70p"]
+K_H_DAKMAX = ["b3_h_dak_max", "h_dak_max"]
+K_H_DAKMIN = ["b3_h_dak_min", "h_dak_min"]
 K_H_MAAI  = ["b3_h_maaiveld", "h_maaiveld"]
 K_DAKTYPE = ["b3_dak_type", "dak_type"]
 K_OPP_PLAT   = ["b3_opp_dak_plat", "opp_dak_plat"]
@@ -35,7 +38,6 @@ def _first(props, keys):
 
 
 def geocode(adres):
-    """Geef dict: {naam, rd:(x,y), pandids:[...], velden:[...]}."""
     r = requests.get(f"{LOCATIESERVER}/free",
                      params={"q": adres, "fq": "type:adres", "rows": 1},
                      headers=HEADERS, timeout=TIMEOUT)
@@ -44,24 +46,20 @@ def geocode(adres):
     if not docs:
         raise LookupError(f"Geen adres gevonden voor: {adres!r}")
     doc = docs[0]
-
     look = requests.get(f"{LOCATIESERVER}/lookup",
                         params={"id": doc["id"], "fl": "*"},
                         headers=HEADERS, timeout=TIMEOUT)
     full = (look.json().get("response", {}).get("docs", [{}])[0]
             if look.ok else {})
-
     src = {**doc, **full}
     rd = None
     wkt = src.get("centroide_rd")
     if wkt and wkt.startswith("POINT"):
         x, y = wkt[wkt.find("(")+1:wkt.find(")")].split()
         rd = (float(x), float(y))
-
     pandids = src.get("pandid") or []
     if isinstance(pandids, str):
         pandids = [pandids]
-
     return {"naam": src.get("weergavenaam", adres), "rd": rd,
             "pandids": pandids, "velden": sorted(src.keys())}
 
@@ -84,8 +82,6 @@ def pand_by_id(pandid):
 
 
 def pand_at(x, y, box=2.0):
-    """Pand op kaartpositie: kleine bbox rond het punt, kies het vlak dat
-    het punt bevat (anders het dichtstbijzijnde)."""
     feats = _wfs({"BBOX": f"{x-box},{y-box},{x+box},{y+box},EPSG:28992"})
     if not feats:
         raise LookupError(f"Geen BAG-pand op positie ({x:.1f}, {y:.1f})")
@@ -96,51 +92,70 @@ def pand_at(x, y, box=2.0):
     return pick
 
 
-def footprints_for_address(adres):
-    """Geef (footprints:list[Polygon], naam:str, pandids:list[str])."""
-    g = geocode(adres)
-    footprints, pandids = [], []
+def _panddata(props):
+    props = props or {}
+    return {"bouwjaar": props.get("bouwjaar") or props.get("oorspronkelijkbouwjaar"),
+            "status": props.get("status")}
 
-    if g["pandids"]:                       # pad A: via pand-id
-        for pid in g["pandids"]:
+
+def footprints_for_address(adres):
+    """Geef (footprints:list[Polygon], naam, pandids:list, panddata:dict)."""
+    g = geocode(adres)
+    footprints, pandids, panddata = [], [], {}
+    if g["pandids"]:
+        for i, pid in enumerate(g["pandids"]):
             feat = pand_by_id(pid)
             footprints.append(shape(feat["geometry"]))
             pandids.append(pid)
-    elif g["rd"]:                          # pad B: op kaartpositie
+            if i == 0:
+                panddata = _panddata(feat.get("properties"))
+    elif g["rd"]:
         feat = pand_at(*g["rd"])
         footprints.append(shape(feat["geometry"]))
         pid = (feat.get("properties") or {}).get("identificatie")
         if pid:
             pandids.append(pid)
+        panddata = _panddata(feat.get("properties"))
     else:
         raise LookupError(
-            f"Geen pand te vinden voor {adres!r}. Beschikbare velden uit "
-            f"Locatieserver: {g['velden']}")
-
-    return footprints, g["naam"], pandids
+            f"Geen pand te vinden voor {adres!r}. Velden: {g['velden']}")
+    return footprints, g["naam"], pandids, panddata
 
 
 def dak_eigenschappen(pandid):
-    for ident in (pandid, f"NL.IMBAG.Pand.{pandid}"):
+    """Hoogtes/daktype + opstand-AANNAME uit 3D BAG (CityJSONFeature)."""
+    for ident in (f"NL.IMBAG.Pand.{pandid}", pandid):
         try:
             r = requests.get(f"{DRIEDBAG_API}/{ident}",
                              headers=HEADERS, timeout=TIMEOUT)
             if r.status_code != 200:
                 continue
-            props = r.json().get("properties", r.json())
-            if not any(str(k).startswith(("b3_", "h_dak", "dak_type")) for k in props):
-                for v in props.values():
-                    if isinstance(v, dict) and any(str(k).startswith("b3_") for k in v):
-                        props = v
-                        break
-            h_dak, h_maai = _first(props, K_H_DAK), _first(props, K_H_MAAI)
+            data = r.json()
+            attrs = data.get("properties") or {}
+            # CityJSONFeature: b3_-attributen onder CityObjects[..].attributes
+            for obj in (data.get("CityObjects") or {}).values():
+                a = obj.get("attributes", {}) if isinstance(obj, dict) else {}
+                if any(str(k).startswith("b3_") for k in a):
+                    attrs = a
+                    break
+            if not attrs:
+                continue
+            h50 = _first(attrs, K_H_DAK50)
+            hmax = _first(attrs, K_H_DAKMAX)
+            hmaai = _first(attrs, K_H_MAAI)
+            dakhoogte = round(h50 - hmaai, 2) if h50 is not None and hmaai is not None else None
+            # opstand-aanname: hoogste dakpunten (dakrand) t.o.v. dakvlak-mediaan
+            opstand_mm = None
+            if h50 is not None and hmax is not None:
+                v = round((hmax - h50) * 1000)
+                opstand_mm = v if 20 <= v <= 1500 else None   # sanity-grens
             return {
-                "h_dak_nap": h_dak, "h_maaiveld_nap": h_maai,
-                "dakhoogte_m": (round(h_dak - h_maai, 2)
-                                if h_dak is not None and h_maai is not None else None),
-                "dak_type": _first(props, K_DAKTYPE),
-                "opp_plat": _first(props, K_OPP_PLAT),
-                "opp_schuin": _first(props, K_OPP_SCHUIN),
+                "h_dak50_nap": h50, "h_dakmax_nap": hmax, "h_maaiveld_nap": hmaai,
+                "dakhoogte_m": dakhoogte,
+                "opstand_mm": opstand_mm,
+                "dak_type": _first(attrs, K_DAKTYPE),
+                "opp_plat": _first(attrs, K_OPP_PLAT),
+                "opp_schuin": _first(attrs, K_OPP_SCHUIN),
             }
         except requests.RequestException:
             continue

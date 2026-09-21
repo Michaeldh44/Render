@@ -28,13 +28,15 @@ def _ring_to_local(coords, minx, maxy):
     return [[round(x - minx, 2), round(maxy - y, 2)] for (x, y) in coords]
 
 
-def build(footprints, enrich=None, meta=None, opbouw=None):
+def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None):
     """
     footprints : list[shapely Polygon] in RD (meters)
     enrich     : dict van dak_eigenschappen() (mag leeg)
+    panddata   : dict van footprints_for_address() (bouwjaar, status)
     meta       : {ref, adres, regel, aantal_vhe, aantal_daken}
     """
     enrich = enrich or {}
+    panddata = panddata or {}
     meta = meta or {}
     union = unary_union([f.buffer(0) for f in footprints])   # clean + merge
     parts = list(getattr(union, "geoms", [union]))
@@ -69,16 +71,26 @@ def build(footprints, enrich=None, meta=None, opbouw=None):
         {"label": "Aantal dakvlakken (panden in blok)", "waarde": str(len(parts)),
          "eenheid": "st"},
     ]
+    if panddata.get("bouwjaar"):
+        dakgegevens.append({"label": "Bouwjaar (BAG)", "waarde": str(panddata["bouwjaar"]),
+                            "eenheid": "", "maatklasse": "A"})
     if dh is not None:
         dakgegevens.append({"label": "Dakhoogte (boven maaiveld, 3D BAG)",
                             "waarde": f"{dh:.2f}", "eenheid": "m", "maatklasse": "B"})
     else:
         dakgegevens.append({"label": "Dakhoogte (boven maaiveld)",
                             "waarde": "onbekend (3D BAG niet beschikbaar)", "eenheid": ""})
+    # opstand: aanname uit 3D BAG hoogte-percentielen, anders n.t.b.
+    if enrich.get("opstand_mm"):
+        dakgegevens.append({"label": "Opstand / dakrand (aanname 3D BAG)",
+                            "waarde": f"~ {enrich['opstand_mm']}", "eenheid": "mm",
+                            "maatklasse": "B"})
+    else:
+        dakgegevens.append({"label": "Opstand / dakrand (hoogte)",
+                            "waarde": "n.t.b. (opgave/inmeting)", "eenheid": "",
+                            "maatklasse": "C"})
     dakgegevens += [
         {"label": "Afschot", "waarde": "n.t.b. (AHN-koppeling volgt)",
-         "eenheid": "", "maatklasse": "C"},
-        {"label": "Opstand / dakrand (hoogte)", "waarde": "n.t.b. (opgave/inmeting)",
          "eenheid": "", "maatklasse": "C"},
         {"label": "HWA-punten / koepels / doorvoeren", "waarde": "n.t.b. (opgave)",
          "eenheid": ""},

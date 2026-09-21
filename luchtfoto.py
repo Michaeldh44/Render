@@ -1,35 +1,37 @@
 #!/usr/bin/env python3
 """
-luchtfoto.py  —  DAKVISUAL uit een echte luchtfoto (PDOK)
-=========================================================
-Haalt een loodrechte lucht-ortho (PDOK, ~8 cm) op over de dak-bbox en
-legt de meet-footprint eroverheen, zodat je ziet dat het model op het
-echte dak geregistreerd staat.
+luchtfoto.py  —  DAKVISUAL uit een echte luchtfoto (PDOK)  [v0.2]
+=================================================================
+Haalt een loodrechte lucht-ortho (PDOK, ~8 cm) over de dak-bbox en tekent
+er de VOLLEDIGE maatvoering op: meet-omtrek, omhullende-maten, noordpijl,
+schaalbalk en dakvlak-label. Zo is de foto meteen de tekening.
 
   haal(bounds_rd, outfile, footprint=..., stand_in=False)
 
-Voor NL is dit scherper en juister dan satelliet (nadir-ortho).
-LET OP: net als bij Nisse is dit een ILLUSTRATIE, geen maatbron.
-
-De echte GetMap kon ik hier niet draaien (geen PDOK-toegang). Endpoint
-staat als constante; met stand_in=True bewijs je de registratie zonder
-netwerk.
+Illustratie, geen maatbron: meet in het DXF.
 """
 import io, requests
 from PIL import Image, ImageDraw, ImageFont
 from shapely.ops import unary_union
 
-# PDOK Actuele Luchtfoto RGB (WMS). Pas layer aan: Actueel_orthoHR (~8cm) of Actueel_ortho25.
 LUCHTFOTO_WMS = "https://service.pdok.nl/hwh/luchtfotorgb/wms/v1_0"
 LAYER = "Actueel_orthoHR"
-MAX_PX = 1600
-HEADERS = {"User-Agent": "zaanstad-dakscan/0.1 (interne tool)"}
+MAX_PX = 1800
+HEADERS = {"User-Agent": "zaanstad-dakscan/0.3 (interne tool)"}
+ORANJE = (255, 90, 40, 255)
+BLAUW  = (40, 108, 176, 255)
 
 
-def _padded(bounds, frac=0.15):
+def _font(size):
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _padded(bounds, frac=0.14):
     minx, miny, maxx, maxy = bounds
-    dx, dy = (maxx - minx) * frac, (maxy - miny) * frac
-    p = max(dx, dy, 2.0)      # min 2 m marge
+    p = max((maxx - minx) * frac, (maxy - miny) * frac, 2.0)
     return (minx - p, miny - p, maxx + p, maxy + p)
 
 
@@ -44,36 +46,37 @@ def _dims(bounds):
 
 
 def _rd_to_px(bounds, W, H):
-    """Maak een functie RD(x,y) -> pixel(px,py) voor deze crop."""
     minx, miny, maxx, maxy = bounds
-    sx = W / (maxx - minx)
-    sy = H / (maxy - miny)
-    def f(x, y):
-        return (round((x - minx) * sx), round((maxy - y) * sy))  # y omklappen
-    return f
+    sx, sy = W / (maxx - minx), H / (maxy - miny)
+    return lambda x, y: (round((x - minx) * sx), round((maxy - y) * sy))
 
 
-def _getmap(bounds, W, H):
-    params = {
-        "SERVICE": "WMS", "VERSION": "1.1.1", "REQUEST": "GetMap",
-        "LAYERS": LAYER, "STYLES": "", "SRS": "EPSG:28992",
-        "BBOX": ",".join(f"{b:.3f}" for b in bounds),   # 1.1.1: minx,miny,maxx,maxy
-        "WIDTH": W, "HEIGHT": H, "FORMAT": "image/png",
-    }
-    r = requests.get(LUCHTFOTO_WMS, params=params, headers=HEADERS, timeout=45)
-    r.raise_for_status()
-    return Image.open(io.BytesIO(r.content)).convert("RGB")
+def _label(d, xy, s, size=20, fg=(0, 0, 0, 255), pad=3):
+    f = _font(size)
+    x, y = xy
+    l, t, r, b = d.textbbox((x, y), s, font=f)
+    d.rectangle([l - pad, t - pad, r + pad, b + pad], fill=(255, 255, 255, 220))
+    d.text((x, y), s, fill=fg, font=f)
 
 
 def _standin(W, H):
-    """Geo-correcte stand-in (grijs membraan-achtig) om registratie te tonen."""
     img = Image.new("RGB", (W, H), (150, 150, 150))
     d = ImageDraw.Draw(img)
-    for i in range(0, W + H, 22):                       # lichte textuur
+    for i in range(0, W + H, 26):
         d.line([(i, 0), (i - H, H)], fill=(140, 140, 140), width=1)
-    d.text((10, 10), "STAND-IN — echte luchtfoto komt van PDOK (Actueel_orthoHR)",
-           fill=(60, 60, 60))
+    d.text((12, 12), "STAND-IN - echte luchtfoto komt van PDOK (Actueel_orthoHR)",
+           fill=(60, 60, 60), font=_font(18))
     return img
+
+
+def _getmap(bounds, W, H):
+    params = {"SERVICE": "WMS", "VERSION": "1.1.1", "REQUEST": "GetMap",
+              "LAYERS": LAYER, "STYLES": "", "SRS": "EPSG:28992",
+              "BBOX": ",".join(f"{b:.3f}" for b in bounds),
+              "WIDTH": W, "HEIGHT": H, "FORMAT": "image/png"}
+    r = requests.get(LUCHTFOTO_WMS, params=params, headers=HEADERS, timeout=45)
+    r.raise_for_status()
+    return Image.open(io.BytesIO(r.content)).convert("RGB")
 
 
 def haal(bounds, outfile, footprint=None, stand_in=False):
@@ -83,23 +86,50 @@ def haal(bounds, outfile, footprint=None, stand_in=False):
     d = ImageDraw.Draw(img, "RGBA")
     to_px = _rd_to_px(b, W, H)
 
-    # --- meetmodel eroverheen: footprint-omtrek ---
     if footprint is not None:
-        geom = unary_union([footprint]) if not hasattr(footprint, "geoms") else footprint
+        geom = footprint if hasattr(footprint, "geoms") else unary_union([footprint])
         polys = list(getattr(geom, "geoms", [geom]))
         for p in polys:
-            pts = [to_px(x, y) for (x, y) in p.exterior.coords]
-            d.line(pts, fill=(255, 90, 40, 255), width=3)      # oranje omtrek
+            d.line([to_px(x, y) for (x, y) in p.exterior.coords],
+                   fill=ORANJE, width=4)
+        # dakvlak-label 'A' in centroid
+        c = geom.centroid
+        cx, cy = to_px(c.x, c.y)
+        d.ellipse([cx-18, cy-18, cx+18, cy+18], fill=(255, 255, 255, 235),
+                  outline=(0, 0, 0, 255), width=2)
+        _label(d, (cx-6, cy-11), "A", size=22)
 
-    # --- schaalbalk (5 m) ---
+        # omhullende-maatlijnen langs de footprint-bbox
+        fminx, fminy, fmaxx, fmaxy = geom.bounds
+        lengte, breedte = fmaxx - fminx, fmaxy - fminy
+        tlx, tly = to_px(fminx, fmaxy)
+        trx, _ = to_px(fmaxx, fmaxy)
+        ty = max(tly - 16, 10)
+        d.line([(tlx, ty), (trx, ty)], fill=BLAUW, width=3)
+        for xx in (tlx, trx):
+            d.line([(xx, ty-6), (xx, ty+6)], fill=BLAUW, width=3)
+        _label(d, ((tlx+trx)//2 - 60, ty-26), f"{lengte:.2f} m omhullend", size=19, fg=BLAUW)
+
+        lx = max(tlx - 16, 10)
+        _, lby = to_px(fminx, fminy)
+        d.line([(lx, tly), (lx, lby)], fill=BLAUW, width=3)
+        for yy in (tly, lby):
+            d.line([(lx-6, yy), (lx+6, yy)], fill=BLAUW, width=3)
+        _label(d, (lx+8, (tly+lby)//2 - 10), f"{breedte:.2f} m", size=19, fg=BLAUW)
+
+    # noordpijl
+    nx, ny = W - 40, 46
+    d.line([(nx, ny+18), (nx, ny-18)], fill=(0, 0, 0, 255), width=4)
+    d.polygon([(nx-7, ny-9), (nx+7, ny-9), (nx, ny-20)], fill=(0, 0, 0, 255))
+    _label(d, (nx-6, ny+22), "N", size=18)
+
+    # schaalbalk 5 m
     minx, miny, maxx, maxy = b
-    m_per_px = (maxx - minx) / W
-    barpx = round(5 / m_per_px)
-    x0, y0 = 14, H - 20
-    d.line([(x0, y0), (x0 + barpx, y0)], fill=(255, 255, 255, 255), width=4)
-    d.line([(x0, y0), (x0 + barpx, y0)], fill=(0, 0, 0, 255), width=2)
-    d.text((x0, y0 - 14), "5 m", fill=(0, 0, 0, 255))
+    barpx = round(5 / ((maxx - minx) / W))
+    x0, y0 = 16, H - 26
+    d.line([(x0, y0), (x0+barpx, y0)], fill=(255, 255, 255, 255), width=6)
+    d.line([(x0, y0), (x0+barpx, y0)], fill=(0, 0, 0, 255), width=3)
+    _label(d, (x0, y0-24), "5 m", size=17)
 
     img.save(outfile)
-    return {"bestand": outfile, "bbox_rd": list(b), "layer": LAYER,
-            "stand_in": stand_in}
+    return {"bestand": outfile, "bbox_rd": list(b), "layer": LAYER, "stand_in": stand_in}
