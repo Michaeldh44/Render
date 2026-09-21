@@ -60,6 +60,47 @@ def health():
     return {"status": "ok", "service": "dakscan", "versie": "0.1"}
 
 
+@app.get("/diag")
+def diag(adres: str = "Roode Wildemanweg 45, Wormerveer"):
+    """Diagnose: ziet de container de key, en wat geeft 3D BAG terug?"""
+    import os, requests
+    out = {"key_present": bool(os.environ.get("ANTHROPIC_API_KEY")),
+           "vision_model": objecten.MODEL}
+    try:
+        fps, naam, pids, pdata = gs.footprints_for_address(adres)
+        out["adres"] = naam
+        out["pandids"] = pids
+        out["bouwjaar"] = pdata.get("bouwjaar")
+        if pids:
+            pid = pids[0]
+            out["driedbag_tries"] = []
+            for ident in (f"NL.IMBAG.Pand.{pid}", pid):
+                r = requests.get(f"{gs.DRIEDBAG_API}/{ident}",
+                                 headers=gs.HEADERS, timeout=30)
+                out["driedbag_tries"].append({"ident": ident, "status": r.status_code})
+                if r.status_code == 200:
+                    data = r.json()
+                    out["driedbag_toplevel_keys"] = list(data.keys())
+                    co = data.get("CityObjects") or {}
+                    for v in co.values():
+                        a = v.get("attributes", {}) if isinstance(v, dict) else {}
+                        if a:
+                            out["driedbag_attribute_keys"] = sorted(a.keys())
+                            break
+                    out["driedbag_dak"] = gs.dak_eigenschappen(pid)
+                    break
+        # mini vision-test (alleen status, geen kosten als key ontbreekt)
+        if fps:
+            from shapely.ops import unary_union
+            u = unary_union([f.buffer(0) for f in fps])
+            img = "/tmp/diag_ov.png"
+            m = lf.haal(u.bounds, img, footprint=u)
+            out["vision_test"] = objecten.analyse(img, bbox_rd=m["bbox_rd"]).get("vision")
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
 TEST_PAGE = """<!doctype html><html lang="nl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>dakscan — test</title><style>
