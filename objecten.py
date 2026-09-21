@@ -17,26 +17,43 @@ API_URL = "https://api.anthropic.com/v1/messages"
 # actuele Vision-modellen (docs): claude-sonnet-4-5 (bewezen), claude-sonnet-5, claude-opus-5.
 MODEL = os.environ.get("DAKSCAN_VISION_MODEL", "claude-sonnet-4-5")
 
-PROMPT = """Je bent dak-inspecteur. Dit is een LOODRECHTE luchtfoto van een PLAT dak.
-De oranje lijn is de omtrek van het pand; kijk alleen BINNEN die omtrek.
+PROMPT = """Je bent een ervaren dakinspecteur. Dit is een LOODRECHTE luchtfoto (~8 cm/pixel)
+van een PLAT dak. De ORANJE lijn is de omtrek van het pand; kijk ALLEEN binnen die omtrek
+en analyseer het dak zorgvuldig en VOLLEDIG.
 
-Geef UITSLUITEND geldige JSON terug (geen uitleg, geen ```), met twee lijsten:
+Herken en benoem ELK opvallend object. Gebruik deze types en aanwijzingen:
+- zonnepaneel : DONKERE (zwart/donkerblauw) rechthoekige panelen, meestal in RIJEN/velden.
+  Groepeer een aaneengesloten veld als EEN object; schat in 'omschrijving' het aantal
+  panelen of rijen. Dit is vaak het grootste dakoppervlak - mis het NIET en verwar het
+  niet met een installatie.
+- lichtstraat : LICHTE/witte langwerpige rechthoeken (daglichtstraten).
+- lichtkoepel : kleine lichte koepels (vierkant/rond).
+- installatie : technische units zoals luchtbehandeling/koeling, grijze kasten - GEEN panelen.
+- schoorsteen : opgemetselde of ronde schoorstenen.
+- dakdoorvoer : kleine ronde ontluchtingen/doorvoeren.
+- dakraam / overig.
 
+Bepaal ook de DAKVLAKKEN: duidelijk van elkaar gescheiden dakdelen, met NAME lagere
+aanbouwen/uitbouwen aan een zijde (bv. een lager voordak of bijgebouw-dak). Geef per
+dakvlak de rechthoekige begrenzing, ook als het hoogteverschil subtiel is.
+
+Geef UITSLUITEND geldige JSON (geen uitleg, geen ```):
 {
  "objecten": [
-   {"type":"lichtstraat|lichtkoepel|schoorsteen|dakdoorvoer|installatie|dakraam|overig",
-    "omschrijving":"kort","x_frac":0.0,"y_frac":0.0,"breedte_frac":0.0,"hoogte_frac":0.0,
+   {"type":"zonnepaneel|lichtstraat|lichtkoepel|installatie|schoorsteen|dakdoorvoer|dakraam|overig",
+    "omschrijving":"kort, incl. geschat aantal bij panelen",
+    "x_frac":0.0,"y_frac":0.0,"breedte_frac":0.0,"hoogte_frac":0.0,
     "zekerheid":"hoog|midden|laag"}
  ],
  "dakvlakken": [
-   {"label":"A","omschrijving":"kort (bv. hoofdveld, lager aanbouwdak)",
+   {"label":"A","omschrijving":"hoofdvlak / lagere uitbouw links / ...",
     "x_frac":0.0,"y_frac":0.0,"breedte_frac":0.0,"hoogte_frac":0.0}
  ]
 }
 
-x_frac/y_frac = MIDDEN van het object als fractie 0..1 van de afbeelding
-(x naar rechts, y naar beneden). breedte_frac/hoogte_frac = grootte als
-fractie. Wees eerlijk met 'zekerheid'. Kleine doorvoeren mogen gemist worden."""
+x_frac/y_frac = MIDDEN van het object als fractie 0..1 van de afbeelding (x naar rechts,
+y naar beneden). breedte_frac/hoogte_frac = grootte als fractie. Wees nauwkeurig en
+volledig; noem liever een object te veel dan te weinig."""
 
 
 def _extract_json(txt):
@@ -74,7 +91,7 @@ def analyse(image_path, frame=None):
         return {"objecten": [], "dakvlakken": [], "vision": "uit (geen ANTHROPIC_API_KEY)"}
 
     data = base64.standard_b64encode(open(image_path, "rb").read()).decode()
-    body = {"model": MODEL, "max_tokens": 1500, "messages": [{"role": "user", "content": [
+    body = {"model": MODEL, "max_tokens": 3000, "messages": [{"role": "user", "content": [
         {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
         {"type": "text", "text": PROMPT}]}]}
     headers = {"x-api-key": key, "anthropic-version": "2023-06-01",

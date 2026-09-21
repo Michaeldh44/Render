@@ -17,9 +17,10 @@ from shapely.ops import unary_union
 
 SIMPLIFY_M = 0.10          # vereenvoudig ringen voor de tekening (10 cm)
 
-OBJ_LABEL = {"lichtstraat": "lichtstraat", "lichtkoepel": "lichtkoepel",
-             "schoorsteen": "schoorsteen", "dakdoorvoer": "dakdoorvoer",
-             "installatie": "installatie", "dakraam": "dakraam", "overig": "overig"}
+OBJ_LABEL = {"zonnepaneel": "zonnepaneel(veld)", "lichtstraat": "lichtstraat",
+             "lichtkoepel": "lichtkoepel", "schoorsteen": "schoorsteen",
+             "dakdoorvoer": "dakdoorvoer", "installatie": "installatie",
+             "dakraam": "dakraam", "overig": "overig"}
 
 BRONNEN = ("Hoogte/3D: 3D BAG (TU Delft, CC BY 4.0) \u00b7 BAG/AHN/Luchtfoto: PDOK \u00b7 "
            "AHN-subtegels: GeoTiles (CC BY 4.0) \u00b7 dakscan 0.1-poc \u00b7 snapshot {snap} \u00b7 "
