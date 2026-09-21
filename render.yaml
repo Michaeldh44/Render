@@ -1,0 +1,13 @@
+# Render Blueprint — dakscan test-service
+# Optioneel: hiermee pakt Render de instellingen automatisch op.
+# Werkt de validatie niet mee? Gebruik dan gewoon de handmatige stappen in
+# SETUP_ROUTE_A.md — die hebben deze yaml niet nodig.
+services:
+  - type: web
+    name: dakscan
+    runtime: docker
+    region: frankfurt          # EU
+    plan: free                 # gratis test-tier (slaapt na inactiviteit)
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true           # elke push naar main -> nieuwe deploy
