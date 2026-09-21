@@ -81,7 +81,8 @@ def diag(adres: str = "Roode Wildemanweg 45, Wormerveer"):
                 if r.status_code == 200:
                     data = r.json()
                     out["driedbag_toplevel_keys"] = list(data.keys())
-                    co = data.get("CityObjects") or {}
+                    cj = data.get("feature", data)
+                    co = cj.get("CityObjects") or {}
                     for v in co.values():
                         a = v.get("attributes", {}) if isinstance(v, dict) else {}
                         if a:

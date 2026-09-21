@@ -14,8 +14,8 @@ Geen key -> geeft lege lijsten terug; de rest van het blad werkt gewoon.
 import os, json, base64, requests
 
 API_URL = "https://api.anthropic.com/v1/messages"
-# actuele Vision-modellen (docs): claude-sonnet-5 / claude-sonnet-4-5.
-MODEL = os.environ.get("DAKSCAN_VISION_MODEL", "claude-sonnet-5")
+# actuele Vision-modellen (docs): claude-sonnet-4-5 (bewezen), claude-sonnet-5, claude-opus-5.
+MODEL = os.environ.get("DAKSCAN_VISION_MODEL", "claude-sonnet-4-5")
 
 PROMPT = """Je bent dak-inspecteur. Dit is een LOODRECHTE luchtfoto van een PLAT dak.
 De oranje lijn is de omtrek van het pand; kijk alleen BINNEN die omtrek.
@@ -76,9 +76,12 @@ def analyse(image_path, bbox_rd=None):
         r = requests.post(API_URL, headers={
             "x-api-key": key, "anthropic-version": "2023-06-01",
             "content-type": "application/json"}, json=body, timeout=90)
-        r.raise_for_status()
     except requests.RequestException as e:
-        return {"objecten": [], "dakvlakken": [], "vision": f"fout: {e}"}
+        return {"objecten": [], "dakvlakken": [], "vision": f"netwerkfout: {e}"}
+    if r.status_code != 200:
+        # toon de ECHTE reden (modelnaam, formaat, ...) i.p.v. alleen de status
+        return {"objecten": [], "dakvlakken": [],
+                "vision": f"fout {r.status_code}: {r.text[:300]}"}
 
     txt = "".join(b.get("text", "") for b in r.json().get("content", [])
                   if b.get("type") == "text")

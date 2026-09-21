@@ -132,8 +132,9 @@ def dak_eigenschappen(pandid):
                 continue
             data = r.json()
             attrs = data.get("properties") or {}
-            # CityJSONFeature: b3_-attributen onder CityObjects[..].attributes
-            for obj in (data.get("CityObjects") or {}).values():
+            # 3D BAG item: CityJSONFeature zit onder data["feature"]
+            cj = data.get("feature", data)
+            for obj in (cj.get("CityObjects") or {}).values():
                 a = obj.get("attributes", {}) if isinstance(obj, dict) else {}
                 if any(str(k).startswith("b3_") for k in a):
                     attrs = a
