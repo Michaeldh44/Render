@@ -12,10 +12,14 @@ Maatklasse-logica (de betrouwbaarheidslaag):
 Verdict blijft NEEDS_REVIEW tot een inmeting valideert.
 """
 from datetime import datetime, timezone
-from shapely.geometry import mapping
+from shapely.geometry import mapping, Point
 from shapely.ops import unary_union
 
 SIMPLIFY_M = 0.10          # vereenvoudig ringen voor de tekening (10 cm)
+
+OBJ_LABEL = {"lichtstraat": "lichtstraat", "lichtkoepel": "lichtkoepel",
+             "schoorsteen": "schoorsteen", "dakdoorvoer": "dakdoorvoer",
+             "installatie": "installatie", "dakraam": "dakraam", "overig": "overig"}
 
 BRONNEN = ("Hoogte/3D: 3D BAG (TU Delft, CC BY 4.0) \u00b7 BAG/AHN/Luchtfoto: PDOK \u00b7 "
            "AHN-subtegels: GeoTiles (CC BY 4.0) \u00b7 dakscan 0.1-poc \u00b7 snapshot {snap} \u00b7 "
@@ -28,16 +32,18 @@ def _ring_to_local(coords, minx, maxy):
     return [[round(x - minx, 2), round(maxy - y, 2)] for (x, y) in coords]
 
 
-def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None):
+def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, objecten=None):
     """
     footprints : list[shapely Polygon] in RD (meters)
     enrich     : dict van dak_eigenschappen() (mag leeg)
     panddata   : dict van footprints_for_address() (bouwjaar, status)
+    objecten   : list uit objecten.analyse() (Vision), elk met rd + type + zekerheid
     meta       : {ref, adres, regel, aantal_vhe, aantal_daken}
     """
     enrich = enrich or {}
     panddata = panddata or {}
     meta = meta or {}
+    objecten = objecten or []
     union = unary_union([f.buffer(0) for f in footprints])   # clean + merge
     parts = list(getattr(union, "geoms", [union]))
 
@@ -56,6 +62,21 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None):
             "punten": _ring_to_local(ring, minx, maxy),
             "oppervlak_m2": round(p.area, 2),
         })
+
+    # --- objecten (Vision) -> genummerde onderdelen in lokaal frame ---
+    onderdelen, objecten_lijst = [], []
+    for nr, o in enumerate(objecten, start=1):
+        rd = o.get("rd")
+        gm = o.get("grootte_m") or (0.6, 0.6)
+        item = {"nr": nr, "type": o.get("type", "overig"),
+                "omschrijving": o.get("omschrijving", ""),
+                "zekerheid": o.get("zekerheid", "laag")}
+        if rd:
+            lx, ly = round(rd[0]-minx, 2), round(maxy-rd[1], 2)
+            onderdelen.append({"nr": nr, "type": item["type"], "label": item["type"],
+                               "positie": [lx, ly], "grootte": list(gm),
+                               "status": "gemeten" if o.get("zekerheid") == "hoog" else "opgave"})
+        objecten_lijst.append(item)
 
     # --- hoogte / daktype (3D BAG) ---
     dh = enrich.get("dakhoogte_m")
@@ -92,9 +113,16 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None):
     dakgegevens += [
         {"label": "Afschot", "waarde": "n.t.b. (AHN-koppeling volgt)",
          "eenheid": "", "maatklasse": "C"},
-        {"label": "HWA-punten / koepels / doorvoeren", "waarde": "n.t.b. (opgave)",
-         "eenheid": ""},
     ]
+    if objecten_lijst:
+        from collections import Counter
+        telling = Counter(o["type"] for o in objecten_lijst)
+        samenvatting = ", ".join(f"{n}x {OBJ_LABEL.get(t, t)}" for t, n in telling.items())
+        dakgegevens.append({"label": "Objecten op dak (Vision)", "waarde": samenvatting,
+                            "eenheid": "", "maatklasse": "C"})
+    else:
+        dakgegevens.append({"label": "HWA-punten / koepels / doorvoeren",
+                            "waarde": "n.t.b. (opgave / Vision uit)", "eenheid": ""})
 
     opbouw = opbouw or {
         "kop": "OPBOUW (advies \u2014 nog niet gemeten)",
@@ -121,9 +149,10 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None):
             "schaal": "auto op A3 (420 x 297 mm)",
             "noord_boven": True,
             "dakvlakken": dakvlakken,
-            "onderdelen": [],
-            "opstand": {"toon": True, "hoogte_mm": None},
+            "onderdelen": onderdelen,
+            "opstand": {"toon": True, "hoogte_mm": enrich.get("opstand_mm")},
         },
+        "objecten_lijst": objecten_lijst if objecten_lijst else None,
         "dakgegevens": dakgegevens,
         "oppervlakte": {
             "per_dakvlak": [{"label": f"Dakvlak {dv['label']} (plat)" if is_plat
@@ -140,3 +169,23 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None):
         },
         "bronnen": BRONNEN.format(snap=snap),
     }
+
+
+def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=None):
+    """Meerpagina-opbouw: OVERZICHT + één pagina per (geometrisch) dakvlak.
+    Geeft list van {spec, footprints, objecten} — de caller genereert per
+    pagina de luchtfoto en zet 'm in spec['dakvisual']."""
+    from shapely.geometry import Point
+    objecten = objecten or []
+    ov = build(footprints, enrich=enrich, panddata=panddata, meta=meta, objecten=objecten)
+    ov["pagina_label"] = "OVERZICHT"
+    paginas = [{"spec": ov, "footprints": footprints, "objecten": objecten}]
+    if len(footprints) > 1:
+        for i, f in enumerate(footprints):
+            obj_i = [o for o in objecten
+                     if o.get("rd") and f.buffer(0.5).contains(Point(*o["rd"]))]
+            sp = build([f], enrich=enrich, panddata=panddata, meta=meta, objecten=obj_i)
+            sp["pagina_label"] = f"DAKVLAK {chr(65+i)}"
+            sp["meta"]["regel"] = f"Dakvlak {chr(65+i)} \u00b7 {sp['oppervlakte']['totaal_m2']:.0f} m\u00b2"
+            paginas.append({"spec": sp, "footprints": [f], "objecten": obj_i})
+    return paginas

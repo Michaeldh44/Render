@@ -79,7 +79,7 @@ def _getmap(bounds, W, H):
     return Image.open(io.BytesIO(r.content)).convert("RGB")
 
 
-def haal(bounds, outfile, footprint=None, stand_in=False):
+def haal(bounds, outfile, footprint=None, objecten=None, stand_in=False):
     b = _padded(bounds)
     W, H = _dims(b)
     img = _standin(W, H) if stand_in else _getmap(b, W, H)
@@ -116,6 +116,24 @@ def haal(bounds, outfile, footprint=None, stand_in=False):
         for yy in (tly, lby):
             d.line([(lx-6, yy), (lx+6, yy)], fill=BLAUW, width=3)
         _label(d, (lx+8, (tly+lby)//2 - 10), f"{breedte:.2f} m", size=19, fg=BLAUW)
+
+    # objecten (Vision) als genummerde vakjes, kleur naar zekerheid
+    kleur = {"hoog": (47, 133, 90, 255), "midden": (183, 121, 31, 255),
+             "laag": (192, 86, 33, 255)}
+    sx = W / (b[2] - b[0])
+    sy = H / (b[3] - b[1])
+    for nr, o in enumerate(objecten or [], start=1):
+        rd = o.get("rd")
+        if not rd:
+            continue
+        gw, gh = o.get("grootte_m") or (0.8, 0.8)
+        px, py = to_px(*rd)
+        hw = max(7, round(gw * sx / 2))
+        hh = max(7, round(gh * sy / 2))
+        col = kleur.get(o.get("zekerheid", "laag"), kleur["laag"])
+        d.rectangle([px-hw, py-hh, px+hw, py+hh], outline=col, width=3,
+                    fill=(255, 255, 255, 90))
+        _label(d, (px-5, py-9), str(nr), size=16, fg=col, pad=2)
 
     # noordpijl
     nx, ny = W - 40, 46

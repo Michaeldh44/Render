@@ -154,107 +154,115 @@ def opp_html(o):
                f'<td class="val">{o["totaal_m2"]:.2f} m&sup2;</td></tr>')
     return "\n".join(out)
 
-def build_html(spec):
+def obj_html(objecten):
+    zk = {"hoog": "A", "midden": "B", "laag": "C"}
+    out = []
+    for o in objecten:
+        mk = zk.get(o.get("zekerheid", "laag"), "C")
+        naam = o.get("type", "overig").replace("_", " ")
+        out.append(f'<tr><td class="lbl">[{o["nr"]}] {html.escape(naam)}'
+                   f'{" · " + html.escape(o["omschrijving"]) if o.get("omschrijving") else ""}</td>'
+                   f'<td class="val"><span class="mk mk{mk}">{mk}</span></td></tr>')
+    return "\n".join(out) or '<tr><td class="lbl">geen objecten gedetecteerd</td><td></td></tr>'
+
+
+STYLE = """
+@page { size: A3 landscape; margin: 0; }
+* { box-sizing: border-box; }
+body { margin:0; font-family: Helvetica, Arial, sans-serif; color:#111; }
+.sheet { width:420mm; height:297mm; padding:9mm 11mm; position:relative; break-after:page; }
+.sheet:last-child { break-after:auto; }
+.header { display:flex; align-items:center; gap:10mm; border-bottom:2px solid #111; padding-bottom:3mm; }
+.brand { display:flex; align-items:center; gap:3mm; }
+.logo { background:#111; color:#fff; font-weight:800; letter-spacing:.5px; padding:3mm 4mm; font-size:15pt; border-radius:2px; }
+.logo small { font-weight:500; opacity:.7; }
+.title { font-size:12.5pt; font-weight:700; line-height:1.25; }
+.title .sub { font-weight:500; color:#333; font-size:10.5pt; }
+.body { display:grid; grid-template-columns: 55% 45%; gap:8mm; margin-top:5mm; }
+.draw { border:1px solid #cfd6dd; border-radius:3px; padding:4mm; }
+.draw svg { width:100%; height:auto; }
+.cap { font-size:7.5pt; color:#333; margin-top:2mm; line-height:1.35; }
+.visual { margin-top:5mm; border:1px solid #cfd6dd; border-radius:3px; height:62mm;
+          background:repeating-linear-gradient(45deg,#eef1f4,#eef1f4 8px,#e6eaef 8px,#e6eaef 16px);
+          display:flex; align-items:center; justify-content:center; color:#8792a0; font-size:9pt; text-align:center; overflow:hidden; }
+.visual img { width:100%; height:100%; object-fit:cover; display:block; }
+.mainviz { border:1px solid #cfd6dd; border-radius:3px; overflow:hidden; background:#eef1f4;
+           height:172mm; display:flex; align-items:center; justify-content:center; }
+.mainviz img { width:100%; height:100%; object-fit:contain; display:block; }
+.vcap { font-size:7.5pt; margin-top:1.5mm; line-height:1.35; }
+.vcap b { color:#111; } .vcap .warn { color:#b45309; }
+h2 { font-size:10.5pt; margin:0 0 1.5mm; border-bottom:1px solid #111; padding-bottom:1mm; }
+.block { margin-bottom:6mm; }
+table { width:100%; border-collapse:collapse; }
+td { padding:1.1mm 0; font-size:9pt; vertical-align:top; }
+td.lbl { color:#333; }
+td.val { text-align:right; font-weight:700; white-space:nowrap; }
+tr { border-bottom:1px dotted #dfe3e8; }
+tr.tot td { border-top:1.5px solid #111; font-size:10pt; padding-top:1.5mm; }
+.mk { display:inline-block; margin-left:2mm; font-size:6.5pt; font-weight:700; color:#fff; border-radius:2px; padding:0 1mm; vertical-align:middle; }
+.mkA { background:#2f855a; } .mkB { background:#b7791f; } .mkC { background:#c05621; }
+.pill { display:inline-block; font-size:8pt; font-weight:700; background:#111; color:#fff; padding:1mm 2.5mm; border-radius:3px; margin-left:4mm; }
+.footer { position:absolute; bottom:6mm; left:11mm; right:11mm; border-top:1px solid #cfd6dd;
+          padding-top:1.5mm; font-size:6.5pt; color:#667; display:flex; justify-content:space-between; gap:6mm; }
+.footer .ref { white-space:nowrap; font-weight:700; color:#334; }
+"""
+
+
+def build_sheet(spec):
     m = spec["meta"]
     svg = build_svg(spec)
     verdict = m.get("verdict", "")
     material = spec["materiaal"]
-    legenda = ("cirkel = dakvlak (letter), vakje = onderdeel [nr] · noord ~ boven (RD) · "
-               f"verdict {verdict}")
-    if spec["daktype"] == "hellend":
-        legenda2 = "buitenmaten = omhullende van de dakvlakken · lichte band = goot (intake), langs de dakvoet"
-    else:
-        legenda2 = "buitenmaten = omhullende van het dakvlak · dikke rand = opstand/dakrand · vakjes = koepels/HWA/doorvoeren"
+    pill = f'<span class="pill">{html.escape(spec["pagina_label"])}</span>' if spec.get("pagina_label") else ""
+    legenda = "cirkel = dakvlak (letter), vakje = onderdeel [nr] · noord ~ boven (RD)"
+    legenda2 = "buitenmaten = omhullende · vakjes = objecten (Vision)"
 
     dv = spec["dakvisual"]
-    heeft_foto = (dv.get("type") == "image" and dv.get("bestand")
-                  and os.path.exists(dv["bestand"]))
+    heeft_foto = (dv.get("type") == "image" and dv.get("bestand") and os.path.exists(dv["bestand"]))
     if heeft_foto:
         img = f'<img src="{_img_data_uri(dv["bestand"])}" alt="luchtfoto"/>'
-        cap = (f"DAKVISUAL — {html.escape(dv.get('onderschrift',''))} · noord ~ boven (RD) · "
-               "schaalbalk 5 m")
-        left_html = (f'<div class="mainviz">{img}</div>'
-                     f'<div class="cap">{cap}</div>'
+        cap = f"DAKVISUAL — {html.escape(dv.get('onderschrift',''))} · noord ~ boven (RD) · schaalbalk 5 m"
+        left_html = (f'<div class="mainviz">{img}</div><div class="cap">{cap}</div>'
                      f'<div class="vcap"><span class="warn">{html.escape(dv.get("let_op",""))}</span></div>')
     else:
-        left_html = (f'<div class="draw">{svg}'
-                     f'<div class="cap">schaal {html.escape(spec["geometrie"]["schaal"])} · {legenda}<br>{legenda2}</div></div>'
-                     f'<div class="visual">DAKVISUAL<br>(luchtfoto / 3D-render — placeholder in deze PoC)</div>')
-    return f"""<!doctype html><html><head><meta charset="utf-8"><style>
-@page {{ size: A3 landscape; margin: 0; }}
-* {{ box-sizing: border-box; }}
-body {{ margin:0; font-family: Helvetica, Arial, sans-serif; color:#111; }}
-.sheet {{ width:420mm; height:297mm; padding:9mm 11mm; }}
-.header {{ display:flex; align-items:center; gap:10mm; border-bottom:2px solid #111;
-          padding-bottom:3mm; }}
-.brand {{ display:flex; align-items:center; gap:3mm; }}
-.logo {{ background:#111; color:#fff; font-weight:800; letter-spacing:.5px;
-         padding:3mm 4mm; font-size:15pt; border-radius:2px; }}
-.logo small {{ font-weight:500; opacity:.7; }}
-.title {{ font-size:12.5pt; font-weight:700; line-height:1.25; }}
-.title .sub {{ font-weight:500; color:#333; font-size:10.5pt; }}
-.body {{ display:grid; grid-template-columns: 55% 45%; gap:8mm; margin-top:5mm; }}
-.draw {{ border:1px solid #cfd6dd; border-radius:3px; padding:4mm; }}
-.draw svg {{ width:100%; height:auto; }}
-.cap {{ font-size:7.5pt; color:#333; margin-top:2mm; line-height:1.35; }}
-.visual {{ margin-top:5mm; border:1px solid #cfd6dd; border-radius:3px;
-           height:62mm; background:
-           repeating-linear-gradient(45deg,#eef1f4,#eef1f4 8px,#e6eaef 8px,#e6eaef 16px);
-           display:flex; align-items:center; justify-content:center; color:#8792a0;
-           font-size:9pt; text-align:center; overflow:hidden; }}
-.visual img {{ width:100%; height:100%; object-fit:cover; display:block; }}
-.mainviz {{ border:1px solid #cfd6dd; border-radius:3px; overflow:hidden;
-            background:#eef1f4; height:172mm; display:flex; align-items:center;
-            justify-content:center; }}
-.mainviz img {{ width:100%; height:100%; object-fit:contain; display:block; }}
-.vcap {{ font-size:7.5pt; margin-top:1.5mm; line-height:1.35; }}
-.vcap b {{ color:#111; }} .vcap .warn {{ color:#b45309; }}
-h2 {{ font-size:10.5pt; margin:0 0 1.5mm; border-bottom:1px solid #111; padding-bottom:1mm; }}
-.block {{ margin-bottom:6mm; }}
-table {{ width:100%; border-collapse:collapse; }}
-td {{ padding:1.1mm 0; font-size:9pt; vertical-align:top; }}
-td.lbl {{ color:#333; }}
-td.val {{ text-align:right; font-weight:700; white-space:nowrap; }}
-tr {{ border-bottom:1px dotted #dfe3e8; }}
-tr.tot td {{ border-top:1.5px solid #111; font-size:10pt; padding-top:1.5mm; }}
-.mk {{ display:inline-block; margin-left:2mm; font-size:6.5pt; font-weight:700;
-       color:#fff; border-radius:2px; padding:0 1mm; vertical-align:middle; }}
-.mkA {{ background:#2f855a; }} .mkB {{ background:#b7791f; }} .mkC {{ background:#c05621; }}
-.footer {{ position:absolute; bottom:6mm; left:11mm; right:11mm;
-           border-top:1px solid #cfd6dd; padding-top:1.5mm; font-size:6.5pt;
-           color:#667; display:flex; justify-content:space-between; gap:6mm; }}
-.footer .ref {{ white-space:nowrap; font-weight:700; color:#334; }}
-</style></head><body>
-<div class="sheet">
+        left_html = (f'<div class="draw">{svg}<div class="cap">schaal {html.escape(spec["geometrie"]["schaal"])} · {legenda}<br>{legenda2}</div></div>'
+                     f'<div class="visual">DAKVISUAL<br>(luchtfoto — placeholder)</div>')
+
+    right = (f'<div class="block"><h2>DAKGEGEVENS</h2><table>{rows_html(spec["dakgegevens"])}</table></div>'
+             f'<div class="block"><h2>DAKOPPERVLAKTE PER DAKVLAK</h2><table>{opp_html(spec["oppervlakte"])}</table></div>')
+    if spec.get("objecten_lijst") is not None:
+        right += (f'<div class="block"><h2>OBJECTEN OP DAK (Vision)</h2>'
+                  f'<table>{obj_html(spec["objecten_lijst"])}</table></div>')
+    right += (f'<div class="block"><h2>{html.escape(material["kop"])}</h2>'
+              f'<table>{rows_html([{"label":r["label"],"waarde":r["waarde"],"eenheid":""} for r in material["rijen"]])}</table></div>')
+
+    return f"""<div class="sheet">
   <div class="header">
     <div class="brand"><div class="logo">dakscan<small> · specblad</small></div></div>
-    <div class="title">{html.escape(m["titel"])}<br>
-      <span class="sub">{html.escape(m.get("regel",""))} &nbsp;·&nbsp; {html.escape(m.get("datum",""))}</span>
-    </div>
+    <div class="title">{html.escape(m["titel"])}{pill}<br>
+      <span class="sub">{html.escape(m.get("regel",""))} &nbsp;·&nbsp; {html.escape(m.get("datum",""))}</span></div>
   </div>
   <div class="body">
-    <div class="left">
-      {left_html}
-    </div>
-    <div class="right">
-      <div class="block"><h2>DAKGEGEVENS</h2>
-        <table>{rows_html(spec['dakgegevens'])}</table></div>
-      <div class="block"><h2>DAKOPPERVLAKTE PER DAKVLAK</h2>
-        <table>{opp_html(spec['oppervlakte'])}</table></div>
-      <div class="block"><h2>{html.escape(material['kop'])}</h2>
-        <table>{rows_html([{'label':r['label'],'waarde':r['waarde'],'eenheid':''} for r in material['rijen']])}</table></div>
-    </div>
+    <div class="left">{left_html}</div>
+    <div class="right">{right}</div>
   </div>
   <div class="footer"><div>{html.escape(spec['bronnen'])}</div>
     <div class="ref">{html.escape(m['ref'])} · {verdict}</div></div>
-</div></body></html>"""
+</div>"""
+
+
+def build_doc(specs):
+    sheets = "\n".join(build_sheet(s) for s in specs)
+    return (f'<!doctype html><html><head><meta charset="utf-8">'
+            f'<style>{STYLE}</style></head><body>{sheets}</body></html>')
+
+
+def build_html(spec):
+    return build_doc([spec])
 
 # ---------- render --------------------------------------------------------
 
-def render(spec_path, out_path):
-    with open(spec_path, encoding="utf-8") as f:
-        spec = json.load(f)
-    doc = build_html(spec)
+def _to_pdf(doc, out_path):
     with sync_playwright() as p:
         b = p.chromium.launch()
         page = b.new_page()
@@ -262,6 +270,29 @@ def render(spec_path, out_path):
         page.pdf(path=out_path, prefer_css_page_size=True, print_background=True)
         b.close()
     print("wrote", out_path)
+
+
+def render_specs(specs, out_path):
+    """specs: lijst van pagina-specs -> één PDF met meerdere pagina's."""
+    _to_pdf(build_doc(specs), out_path)
+
+
+def render_specs_bytes(specs):
+    """Zelfde als render_specs, maar geeft de PDF-bytes terug (voor de service)."""
+    with sync_playwright() as p:
+        b = p.chromium.launch()
+        page = b.new_page()
+        page.set_content(build_doc(specs), wait_until="networkidle")
+        pdf = page.pdf(prefer_css_page_size=True, print_background=True)
+        b.close()
+    return pdf
+
+
+def render(spec_path, out_path):
+    with open(spec_path, encoding="utf-8") as f:
+        data = json.load(f)
+    specs = data if isinstance(data, list) else [data]
+    _to_pdf(build_doc(specs), out_path)
 
 if __name__ == "__main__":
     render(sys.argv[1], sys.argv[2])

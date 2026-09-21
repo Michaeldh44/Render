@@ -25,6 +25,7 @@ import build_dakspec as bd
 import geo_sources as gs
 import luchtfoto as lf
 import render as rnd
+import objecten
 
 app = FastAPI(title="dakscan", version="0.1")
 
@@ -139,12 +140,13 @@ class SpecbladReq(BaseModel):
     adressen: list[str]
     ref: str = "zd-poc"
     luchtfoto: bool = True
+    vision: bool = True         # Claude Vision voor objecten + dakvlakken
     formaat: str = "pdf"        # "pdf" of "json"
 
 
 @app.post("/specblad")
 def specblad(req: SpecbladReq):
-    """Echt: adres(sen) -> BAG/3D BAG -> specblad. Heeft PDOK nodig."""
+    """Echt: adres(sen) -> BAG/3D BAG/luchtfoto/Vision -> meerpagina-specblad."""
     try:
         footprints, namen, pandids, panddata = [], [], [], {}
         for adres in req.adressen:
@@ -157,26 +159,42 @@ def specblad(req: SpecbladReq):
                 if pid not in pandids:
                     pandids.append(pid)
         enrich = gs.dak_eigenschappen(pandids[0]) if pandids else {}
-
         titel = namen[0] + (f" e.a. ({len(namen)} adressen)" if len(namen) > 1 else "")
-        spec = bd.build(footprints, enrich=enrich, panddata=panddata,
-                        meta={"ref": req.ref, "adres": titel,
-                              "regel": f"{len(namen)} VHE / {len(pandids)} pand(en) = 1 dak"})
+        meta = {"ref": req.ref, "adres": titel,
+                "regel": f"{len(namen)} VHE / {len(pandids)} pand(en) = 1 dak"}
 
+        union = unary_union([f.buffer(0) for f in footprints])
+
+        # 1) overzichtsfoto (voor Vision) + Vision-analyse
+        objecten_rd = []
         if req.luchtfoto:
-            union = unary_union([f.buffer(0) for f in footprints])
-            img = f"/tmp/{req.ref}_luchtfoto.png"
-            meta = lf.haal(union.bounds, img, footprint=union)   # echte PDOK-ortho
-            spec["dakvisual"].update({
-                "type": "image", "bestand": img,
-                "onderschrift": f"DAKVISUAL — PDOK-luchtfoto ({meta['layer']}) met "
-                                "meet-omtrek; illustratie, geen maatbron: meet in het DXF."})
+            ov_img = f"/tmp/{req.ref}_ov.png"
+            meta_lf = lf.haal(union.bounds, ov_img, footprint=union)
+            if req.vision:
+                res = objecten.analyse(ov_img, bbox_rd=meta_lf["bbox_rd"])
+                objecten_rd = res.get("objecten", [])
 
+        # 2) meerpagina-opbouw (overzicht + per dakvlak)
+        paginas = bd.bouw_paginas(footprints, enrich=enrich, panddata=panddata,
+                                  meta=meta, objecten=objecten_rd)
+
+        # 3) per pagina de luchtfoto met objecten/omtrek
+        if req.luchtfoto:
+            for i, p in enumerate(paginas):
+                u = unary_union([f.buffer(0) for f in p["footprints"]])
+                img = f"/tmp/{req.ref}_p{i}.png"
+                mlf = lf.haal(u.bounds, img, footprint=u, objecten=p["objecten"])
+                p["spec"]["dakvisual"].update({
+                    "type": "image", "bestand": img,
+                    "onderschrift": f"PDOK-luchtfoto ({mlf['layer']}) met meet-omtrek"
+                                    + (" en objecten (Vision)" if p["objecten"] else "")})
+
+        specs = [p["spec"] for p in paginas]
         if req.formaat == "json":
-            return spec
-        return Response(render_pdf_bytes(spec), media_type="application/pdf")
+            return specs
+        return Response(rnd.render_specs_bytes(specs), media_type="application/pdf")
 
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:                                  # PDOK down / veldnaam?
-        raise HTTPException(status_code=502, detail=f"open-data fout: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"open-data/vision fout: {e}")
