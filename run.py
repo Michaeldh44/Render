@@ -25,20 +25,17 @@ def main():
                     help="echte PDOK-luchtfoto als DAKVISUAL ophalen")
     args = ap.parse_args()
 
-    pandids, namen = [], []
+    footprints, namen, pandids = [], [], []
     for adres in args.adressen:
-        ids, naam, _rd = gs.geocode_to_pandids(adres)
+        fps, naam, pids = gs.footprints_for_address(adres)
+        footprints += fps
         namen.append(naam)
-        for pid in ids:
+        for pid in pids:
             if pid not in pandids:
                 pandids.append(pid)
-        print(f"  {adres}  ->  pand(en): {ids}", file=sys.stderr)
+        print(f"  {adres}  ->  pand(en): {pids or '(op kaartpositie)'}", file=sys.stderr)
 
-    footprints, enrich = [], {}
-    for i, pid in enumerate(pandids):
-        footprints.append(gs.pand_footprint(pid))
-        if i == 0:
-            enrich = gs.dak_eigenschappen(pid)   # hoogte/daktype van 1e pand
+    enrich = gs.dak_eigenschappen(pandids[0]) if pandids else {}
 
     titel = namen[0] + (f" e.a. ({len(namen)} adressen)" if len(namen) > 1 else "")
     spec = bd.build(footprints, enrich=enrich,

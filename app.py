@@ -146,19 +146,15 @@ class SpecbladReq(BaseModel):
 def specblad(req: SpecbladReq):
     """Echt: adres(sen) -> BAG/3D BAG -> specblad. Heeft PDOK nodig."""
     try:
-        pandids, namen = [], []
+        footprints, namen, pandids = [], [], []
         for adres in req.adressen:
-            ids, naam, _ = gs.geocode_to_pandids(adres)
+            fps, naam, pids = gs.footprints_for_address(adres)
+            footprints += fps
             namen.append(naam)
-            for pid in ids:
+            for pid in pids:
                 if pid not in pandids:
                     pandids.append(pid)
-
-        footprints, enrich = [], {}
-        for i, pid in enumerate(pandids):
-            footprints.append(gs.pand_footprint(pid))
-            if i == 0:
-                enrich = gs.dak_eigenschappen(pid)
+        enrich = gs.dak_eigenschappen(pandids[0]) if pandids else {}
 
         titel = namen[0] + (f" e.a. ({len(namen)} adressen)" if len(namen) > 1 else "")
         spec = bd.build(footprints, enrich=enrich,
