@@ -28,6 +28,8 @@ K_H_MAAI  = ["b3_h_maaiveld", "h_maaiveld"]
 K_DAKTYPE = ["b3_dak_type", "dak_type"]
 K_OPP_PLAT   = ["b3_opp_dak_plat", "opp_dak_plat"]
 K_OPP_SCHUIN = ["b3_opp_dak_schuin", "opp_dak_schuin"]
+K_OPP_GROND  = ["b3_opp_grond", "opp_grond"]
+K_H_NOK      = ["b3_h_nok", "h_nok"]
 
 
 def _first(props, keys):
@@ -154,15 +156,29 @@ def dak_eigenschappen(pandid):
                 return round((a - b) * 1000) if a is not None and b is not None else None
             opstand_hoog = _mm(hmax, h50)
             opstand_laag = _mm(hmax, h70)
+            opp_plat = _first(attrs, K_OPP_PLAT)
+            opp_schuin = _first(attrs, K_OPP_SCHUIN)
+            opp_grond = _first(attrs, K_OPP_GROND)
+            # classificatie plat/hellend uit de dakoppervlakken
+            pl, sh = opp_plat or 0, opp_schuin or 0
+            is_plat = sh <= 0.2 * (pl + sh) if (pl + sh) else True
+            # gemiddelde hellingshoek (indicatief) uit projectie schuin dak
+            import math as _m
+            helling_deg = None
+            if not is_plat and opp_schuin and opp_grond:
+                ratio = min(1.0, max(0.0, (opp_grond - pl) / opp_schuin)) if opp_schuin else 0
+                if 0 < ratio <= 1:
+                    helling_deg = round(_m.degrees(_m.acos(ratio)), 1)
             return {
                 "h_dak50_nap": h50, "h_dak70_nap": h70,
                 "h_dakmax_nap": hmax, "h_dakmin_nap": hmin, "h_maaiveld_nap": hmaai,
+                "h_nok_nap": _first(attrs, K_H_NOK),
                 "dakhoogte_m": dakhoogte,
                 "opstand_hoog_mm": opstand_hoog,
                 "opstand_laag_mm": opstand_laag,
                 "dak_type": _first(attrs, K_DAKTYPE),
-                "opp_plat": _first(attrs, K_OPP_PLAT),
-                "opp_schuin": _first(attrs, K_OPP_SCHUIN),
+                "opp_plat": opp_plat, "opp_schuin": opp_schuin, "opp_grond": opp_grond,
+                "is_plat": is_plat, "helling_deg": helling_deg,
             }
         except requests.RequestException:
             continue

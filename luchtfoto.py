@@ -138,6 +138,22 @@ def haal(bounds, outfile, footprint=None, objecten=None, opstand=None,
     for p in polys:
         d.line([TP(x, y) for (x, y) in p.exterior.coords], fill=ORANJE, width=4)
 
+    # bouwtekening-maten: lengte per dakrand-zijde
+    for p in polys:
+        ring = list(p.simplify(0.25, preserve_topology=True).exterior.coords)
+        crd = p.representative_point()
+        for (ax, ay), (bx, by) in zip(ring, ring[1:]):
+            L = math.hypot(bx-ax, by-ay)
+            if L < 0.8:
+                continue
+            mx, my = (ax+bx)/2, (ay+by)/2
+            nx, ny = -(by-ay), (bx-ax)
+            if nx*(crd.x-mx) + ny*(crd.y-my) > 0:      # naar buiten wijzen
+                nx, ny = -nx, -ny
+            mag = math.hypot(nx, ny) or 1
+            px, py = TP(mx + nx/mag*1.3, my + ny/mag*1.3)
+            _label(d, (px-12, py-8), f"{L:.1f}", size=14, fg=(20, 20, 20, 255))
+
     # deelvlakken (overzicht) of enkel dakvlak-label
     def _letter(L, x, y):
         px, py = TP(x, y)

@@ -130,8 +130,13 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
     # --- hoogte / daktype (3D BAG) ---
     dh = enrich.get("dakhoogte_m")
     dak_type = (enrich.get("dak_type") or "").lower()
-    is_plat = ("horizontal" in dak_type or "plat" in dak_type
-               or (enrich.get("opp_plat") or 0) >= (enrich.get("opp_schuin") or 0))
+    if "is_plat" in enrich:
+        is_plat = enrich["is_plat"]
+    else:
+        is_plat = ("horizontal" in dak_type or "plat" in dak_type
+                   or (enrich.get("opp_plat") or 0) >= (enrich.get("opp_schuin") or 0))
+    helling = enrich.get("helling_deg")
+    opp_schuin = enrich.get("opp_schuin")
 
     snap = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -144,6 +149,13 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
     if panddata.get("bouwjaar"):
         dakgegevens.append({"label": "Bouwjaar (BAG)", "waarde": str(panddata["bouwjaar"]),
                             "eenheid": "", "maatklasse": "A"})
+    # daktype automatisch herkend (3D BAG)
+    dakgegevens.append({"label": "Daktype (3D BAG)",
+                        "waarde": "plat" if is_plat else "hellend",
+                        "eenheid": "", "maatklasse": "B"})
+    if not is_plat and helling is not None:
+        dakgegevens.append({"label": "Hellingshoek (gemiddeld, indicatief)",
+                            "waarde": f"~ {helling}", "eenheid": "\u00b0", "maatklasse": "C"})
     if dh is not None:
         dakgegevens.append({"label": "Dakhoogte (boven maaiveld, 3D BAG)",
                             "waarde": f"{dh:.2f}", "eenheid": "m", "maatklasse": "B"})
@@ -207,12 +219,23 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
         },
         "objecten_lijst": objecten_lijst if objecten_lijst else None,
         "dakgegevens": dakgegevens,
-        "oppervlakte": {
-            "per_dakvlak": [{"label": f"Dakvlak {dv['label']} (plat)" if is_plat
-                             else f"Dakvlak {dv['label']}", "m2": dv["oppervlak_m2"]}
-                            for dv in dakvlakken],
-            "totaal_m2": area_m2,
-        },
+        "oppervlakte": (
+            {   # hellend: het ECHTE (schuine) dakoppervlak uit 3D BAG
+                "per_dakvlak": [
+                    {"label": "Plat vlak in grondprojectie", "m2": area_m2},
+                    {"label": f"Schuin dakoppervlak (3D BAG"
+                              + (f", ~{helling}\u00b0" if helling else "") + ")",
+                     "m2": round(opp_schuin, 2)},
+                ],
+                "totaal_m2": round(opp_schuin, 2),
+            }
+            if (not is_plat and opp_schuin) else
+            {   # plat: grondvlak = dakoppervlak
+                "per_dakvlak": [{"label": f"Dakvlak {dv['label']} (plat)", "m2": dv["oppervlak_m2"]}
+                                for dv in dakvlakken],
+                "totaal_m2": area_m2,
+            }
+        ),
         "materiaal": opbouw,
         "dakvisual": {
             "type": "placeholder",
