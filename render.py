@@ -80,6 +80,16 @@ def build_svg(spec):
 
     # --- components ---
     for od in g.get("onderdelen", []):
+        if "poly" in od:                       # maatvaste contour
+            pts = " ".join(f"{T(p)[0]:.1f},{T(p)[1]:.1f}" for p in od["poly"])
+            e.append(f'<polygon points="{pts}" fill="#dfe6ee" stroke="#334" stroke-width="1"/>')
+            cx = sum(T(p)[0] for p in od["poly"]) / len(od["poly"])
+            cy = sum(T(p)[1] for p in od["poly"]) / len(od["poly"])
+            e.append(f'<text x="{cx:.1f}" y="{cy+3:.1f}" font-size="9" font-weight="bold" '
+                     f'text-anchor="middle" fill="#111">{od["nr"]}</text>')
+            continue
+        if "positie" not in od:
+            continue
         px, py = T(od["positie"])
         gw, gh = od.get("grootte", [0.6, 0.6])
         w, h = gw*s, gh*s
@@ -88,7 +98,6 @@ def build_svg(spec):
                  f'height="{h:.1f}" fill="#dfe6ee" stroke="#334" stroke-width="1" {dash}/>')
         e.append(f'<text x="{px:.1f}" y="{py+3:.1f}" font-size="9" font-weight="bold" '
                  f'text-anchor="middle" fill="#111">{od["nr"]}</text>')
-        # small label for windows / installations
         if od["type"] in ("dakraam", "installatie"):
             e.append(f'<text x="{px:.1f}" y="{py+h/2+11:.1f}" font-size="7.5" '
                      f'text-anchor="middle" fill="#333">{html.escape(od["label"])}</text>')
@@ -160,8 +169,10 @@ def obj_html(objecten):
     for o in objecten:
         mk = zk.get(o.get("zekerheid", "laag"), "C")
         naam = o.get("type", "overig").replace("_", " ")
+        m2 = f' &middot; {o["m2"]:.1f} m&sup2;' if o.get("m2") else ""
         out.append(f'<tr><td class="lbl">[{o["nr"]}] {html.escape(naam)}'
-                   f'{" · " + html.escape(o["omschrijving"]) if o.get("omschrijving") else ""}</td>'
+                   f'{" &middot; " + html.escape(o["omschrijving"]) if o.get("omschrijving") else ""}'
+                   f'{m2}</td>'
                    f'<td class="val"><span class="mk mk{mk}">{mk}</span></td></tr>')
     return "\n".join(out) or '<tr><td class="lbl">geen objecten gedetecteerd</td><td></td></tr>'
 
@@ -297,4 +308,4 @@ def render(spec_path, out_path):
 if __name__ == "__main__":
     render(sys.argv[1], sys.argv[2])
 
-VERSION = "r4-2026-09-21"
+VERSION = "r5-2026-09-21"

@@ -193,19 +193,24 @@ def haal(bounds, outfile, footprint=None, objecten=None, opstand=None,
         d.line([(lx-6, yy), (lx+6, yy)], fill=BLAUW, width=3)
     _label(d, (lx+8, (tly+lby)/2-10), f"{breedte:.2f} m", size=19, fg=BLAUW)
 
-    # objecten (Vision)
+    # objecten: maatvaste contour (segmentatie) of anders een blok (Vision)
     kleur = {"hoog": (47, 133, 90, 255), "midden": (183, 121, 31, 255),
              "laag": (192, 86, 33, 255)}
     for nr, o in enumerate(objecten or [], start=1):
-        if not o.get("rd"):
-            continue
-        gw, gh = o.get("grootte_m") or (0.8, 0.8)
-        px, py = TP(*o["rd"])
-        hw, hh = max(7, gw*res/2), max(7, gh*res/2)
         col = kleur.get(o.get("zekerheid", "laag"), kleur["laag"])
-        d.rectangle([px-hw, py-hh, px+hw, py+hh], outline=col, width=3,
-                    fill=(255, 255, 255, 90))
-        _label(d, (px-5, py-9), str(nr), size=16, fg=col, pad=2)
+        if o.get("poly_rd"):
+            pts = [TP(x, y) for (x, y) in o["poly_rd"]]
+            d.polygon(pts, outline=col, width=3)
+            cxp = sum(p[0] for p in pts) / len(pts)
+            cyp = sum(p[1] for p in pts) / len(pts)
+            _label(d, (cxp-5, cyp-9), str(nr), size=15, fg=col, pad=2)
+        elif o.get("rd"):
+            gw, gh = o.get("grootte_m") or (0.8, 0.8)
+            px, py = TP(*o["rd"])
+            hw, hh = max(7, gw*res/2), max(7, gh*res/2)
+            d.rectangle([px-hw, py-hh, px+hw, py+hh], outline=col, width=3,
+                        fill=(255, 255, 255, 90))
+            _label(d, (px-5, py-9), str(nr), size=16, fg=col, pad=2)
 
     # opstand-aanduiding
     if opstand and (opstand.get("hoog") or opstand.get("laag")):
@@ -244,4 +249,4 @@ def haal(bounds, outfile, footprint=None, objecten=None, opstand=None,
     return {"bestand": outfile, "layer": LAYER, "stand_in": stand_in,
             "frame": {"o": o_rd, "du": du_rd, "dv": dv_rd}}
 
-VERSION = "r4-2026-09-21"
+VERSION = "r5-2026-09-21"

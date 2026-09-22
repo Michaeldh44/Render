@@ -5,3 +5,5 @@ shapely>=2.0
 pyproj>=3.6
 requests>=2.31
 pillow>=10.0
+opencv-python-headless>=4.9
+numpy>=1.26

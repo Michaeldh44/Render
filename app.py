@@ -26,6 +26,7 @@ import geo_sources as gs
 import luchtfoto as lf
 import render as rnd
 import objecten
+import segment
 
 app = FastAPI(title="dakscan", version="0.1")
 
@@ -70,6 +71,7 @@ def diag(adres: str = "Roode Wildemanweg 45, Wormerveer"):
                        "luchtfoto": getattr(lf, "VERSION", "?"),
                        "objecten": getattr(objecten, "VERSION", "?"),
                        "build_dakspec": getattr(bd, "VERSION", "?"),
+                       "segment": getattr(segment, "VERSION", "?"),
                        "render": getattr(rnd, "VERSION", "?"),
                        "app": globals().get("VERSION", "?")}}
     if out["key_present"]:
@@ -229,19 +231,22 @@ def specblad(req: SpecbladReq):
 
         union = unary_union([f.buffer(0) for f in footprints])
 
-        # 1) overzichtsfoto (voor Vision) + Vision-analyse
+        # 1) overzichtsfoto + segmentatie (contouren) + Vision (labels)
         objecten_rd, vision_status, dakvlak_polys = [], "luchtfoto uit", None
         if req.luchtfoto:
             ov_img = f"/tmp/{req.ref}_ov.png"
             meta_lf = lf.haal(union.bounds, ov_img, footprint=union)
+            contouren = segment.segmenteer(ov_img, meta_lf["frame"], footprint=union)
             if req.vision:
                 res = objecten.analyse(ov_img, frame=meta_lf["frame"])
-                objecten_rd = res.get("objecten", [])
                 vision_status = res.get("vision")
+                objecten_rd = (segment.koppel_labels(contouren, res.get("objecten", []))
+                               if contouren else res.get("objecten", []))
                 rects = bd.polys_from_vision(res.get("dakvlakken", []))
                 if rects:
                     dakvlak_polys = bd.split_dakvlakken(union, rects)
             else:
+                objecten_rd = segment.koppel_labels(contouren, [])
                 vision_status = "vision uit (verzoek)"
 
         # 2) meerpagina-opbouw (overzicht + per dakvlak)
@@ -273,4 +278,4 @@ def specblad(req: SpecbladReq):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"open-data/vision fout: {e}")
 
-VERSION = "r4-2026-09-21"
+VERSION = "r5-2026-09-21"

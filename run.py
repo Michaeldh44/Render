@@ -17,6 +17,7 @@ import build_dakspec as bd
 import luchtfoto as lf
 import render
 import objecten as objmod
+import segment as segmod
 
 
 def main():
@@ -52,16 +53,19 @@ def main():
     if args.luchtfoto:
         ov = f"{base}_ov.png"
         mlf = lf.haal(union.bounds, ov, footprint=union)
+        contouren = segmod.segmenteer(ov, mlf["frame"], footprint=union)
         if args.vision:
             res = objmod.analyse(ov, frame=mlf["frame"])
-            objecten_rd = res.get("objecten", [])
             vision_status = res.get("vision")
+            objecten_rd = (segmod.koppel_labels(contouren, res.get("objecten", []))
+                           if contouren else res.get("objecten", []))
             rects = bd.polys_from_vision(res.get("dakvlakken", []))
             if rects:
                 dakvlak_polys = bd.split_dakvlakken(union, rects)
-            print(f"  vision: {vision_status} -> {len(objecten_rd)} objecten, "
+            print(f"  segmentatie: {len(contouren)} contouren | vision: {vision_status} | "
                   f"{len(dakvlak_polys or [])} dakvlakken", file=sys.stderr)
         else:
+            objecten_rd = segmod.koppel_labels(contouren, [])
             vision_status = "vision uit (verzoek)"
 
     paginas = bd.bouw_paginas(footprints, enrich=enrich, panddata=panddata,
@@ -92,4 +96,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-VERSION = "r4-2026-09-21"
+VERSION = "r5-2026-09-21"

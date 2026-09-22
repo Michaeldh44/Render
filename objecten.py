@@ -134,4 +134,4 @@ def analyse(image_path, frame=None):
                            "poly_rd": poly_rd, **(geo or {})})
     return {"objecten": objecten, "dakvlakken": dakvlakken, "vision": "ok"}
 
-VERSION = "r4-2026-09-21"
+VERSION = "r5-2026-09-21"

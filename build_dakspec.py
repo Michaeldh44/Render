@@ -113,19 +113,25 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
             "oppervlak_m2": round(p.area, 2),
         })
 
-    # --- objecten (Vision) -> genummerde onderdelen in lokaal frame ---
+    # --- objecten (Vision + segmentatie) -> onderdelen in lokaal frame ---
     onderdelen, objecten_lijst = [], []
     for nr, o in enumerate(objecten, start=1):
-        rd = o.get("rd")
-        gm = o.get("grootte_m") or (0.6, 0.6)
         item = {"nr": nr, "type": o.get("type", "overig"),
                 "omschrijving": o.get("omschrijving", ""),
-                "zekerheid": o.get("zekerheid", "laag")}
-        if rd:
+                "zekerheid": o.get("zekerheid", "laag"),
+                "m2": o.get("m2")}
+        status = "gemeten" if o.get("poly_rd") else (
+            "gemeten" if o.get("zekerheid") == "hoog" else "opgave")
+        if o.get("poly_rd"):                          # maatvaste contour
+            ring = [[round(x-minx, 2), round(maxy-y, 2)] for (x, y) in o["poly_rd"]]
+            onderdelen.append({"nr": nr, "type": item["type"], "label": item["type"],
+                               "poly": ring, "status": status})
+        elif o.get("rd"):                             # losse Vision-schatting (blok)
+            rd = o["rd"]
+            gm = o.get("grootte_m") or (0.6, 0.6)
             lx, ly = round(rd[0]-minx, 2), round(maxy-rd[1], 2)
             onderdelen.append({"nr": nr, "type": item["type"], "label": item["type"],
-                               "positie": [lx, ly], "grootte": list(gm),
-                               "status": "gemeten" if o.get("zekerheid") == "hoog" else "opgave"})
+                               "positie": [lx, ly], "grootte": list(gm), "status": status})
         objecten_lijst.append(item)
 
     # --- hoogte / daktype (3D BAG) ---
@@ -278,4 +284,4 @@ def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=Non
                             "dakvlakken": None, "label": L})
     return paginas
 
-VERSION = "r4-2026-09-21"
+VERSION = "r5-2026-09-21"
