@@ -16,7 +16,10 @@ import cv2
 import numpy as np
 from shapely.geometry import Polygon
 
-CLUSTER_M = 0.8   # aaneenliggende panelen binnen deze afstand -> 1 veld
+CLUSTER_M = 0.8      # aaneenliggende panelen binnen deze afstand -> 1 veld
+EXTENT_MIN = 0.62    # vlek moet zijn omhullende rechthoek zo goed vullen (anders = blob)
+LICHT_MAX_M2 = 40.0  # lichtstraat/koepel groter dan dit is geen daglichtopening
+ROOF_SHARE_MAX = 0.15  # één object > 15% van het dak = vrijwel zeker segmentatie-fout
 
 
 def _rd_of(px, py, W, H, frame):
@@ -115,6 +118,7 @@ def segmenteer(image_path, frame, footprint=None, min_m2=1.5):
 
     mpp = _mperpx(W, H, frame)
     clus = max(3, int(round(CLUSTER_M / mpp)))        # cluster-kernel (panelen)
+    roof_m2 = footprint.area if footprint is not None else None
 
     objs = []
     for kind, binm, extra_close in (("zonnepaneel", donker, clus),
@@ -128,19 +132,31 @@ def segmenteer(image_path, frame, footprint=None, min_m2=1.5):
             m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kk)
         cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for c in cnts:
-            if cv2.contourArea(c) < 30:
+            area_px = cv2.contourArea(c)
+            if area_px < 30:
                 continue
             rr = cv2.minAreaRect(c)                    # strakke rechthoek
             (wpx, hpx) = rr[1]
+            rect_px = wpx * hpx
+            if rect_px <= 0:
+                continue
+            extent = area_px / rect_px                 # hoe goed vult de vlek de rechthoek
+            if extent < EXTENT_MIN:                    # geen strak object -> blob/artefact weg
+                continue
             w_m, h_m = wpx * mpp, hpx * mpp
             m2 = round(w_m * h_m, 2)
             if m2 < min_m2:
+                continue
+            if roof_m2 and m2 > ROOF_SHARE_MAX * roof_m2:   # te groot voor één object
+                continue
+            if kind == "lichtstraat" and m2 > LICHT_MAX_M2:  # geen daglichtopening
                 continue
             box = cv2.boxPoints(rr)                    # 4 rechte hoeken
             poly_rd = [_rd_of(float(px), float(py), W, H, frame) for (px, py) in box]
             cx, cy = rr[0]
             objs.append({"type": kind,
                          "poly_rd": [list(p) for p in poly_rd], "m2": m2,
+                         "extent": round(extent, 2),
                          "rd": _rd_of(float(cx), float(cy), W, H, frame),
                          "afm_m": (round(max(w_m, h_m), 2), round(min(w_m, h_m), 2))})
     return objs
