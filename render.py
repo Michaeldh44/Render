@@ -164,7 +164,7 @@ def opp_html(o):
     return "\n".join(out)
 
 def obj_html(objecten):
-    zk = {"hoog": "A", "midden": "B", "laag": "C"}
+    zk = {"hoog": "A", "midden": "B", "laag": "C", "A": "A", "B": "B", "C": "C"}
     out = []
     for o in objecten:
         mk = zk.get(o.get("zekerheid", "laag"), "C")
@@ -308,4 +308,4 @@ def render(spec_path, out_path):
 if __name__ == "__main__":
     render(sys.argv[1], sys.argv[2])
 
-VERSION = "r5-2026-09-21"
+VERSION = "r6-2026-09-22"

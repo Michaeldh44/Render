@@ -27,6 +27,7 @@ import luchtfoto as lf
 import render as rnd
 import objecten
 import segment
+import dossier
 
 app = FastAPI(title="dakscan", version="0.1")
 
@@ -72,6 +73,7 @@ def diag(adres: str = "Roode Wildemanweg 45, Wormerveer"):
                        "objecten": getattr(objecten, "VERSION", "?"),
                        "build_dakspec": getattr(bd, "VERSION", "?"),
                        "segment": getattr(segment, "VERSION", "?"),
+                       "dossier": getattr(dossier, "VERSION", "?"),
                        "render": getattr(rnd, "VERSION", "?"),
                        "app": globals().get("VERSION", "?")}}
     if out["key_present"]:
@@ -240,19 +242,29 @@ def specblad(req: SpecbladReq):
             if req.vision:
                 res = objecten.analyse(ov_img, frame=meta_lf["frame"])
                 vision_status = res.get("vision")
-                objecten_rd = (segment.koppel_labels(contouren, res.get("objecten", []))
+                objecten_rd = (segment.combineer(contouren, res.get("objecten", []))
                                if contouren else res.get("objecten", []))
                 rects = bd.polys_from_vision(res.get("dakvlakken", []))
                 if rects:
                     dakvlak_polys = bd.split_dakvlakken(union, rects)
             else:
-                objecten_rd = segment.koppel_labels(contouren, [])
+                objecten_rd = segment.combineer(contouren, [])
                 vision_status = "vision uit (verzoek)"
 
-        # 2) meerpagina-opbouw (overzicht + per dakvlak)
+        # 2) detecties in het DOSSIER schrijven; PDF wordt een view daarop
+        pandid = pandids[0] if pandids else f"geen-{req.ref}"
+        dak_feiten = {"daktype": "plat" if enrich.get("is_plat", True) else "hellend",
+                      "dakhoogte_m": enrich.get("dakhoogte_m"),
+                      "opstand_hoog_mm": enrich.get("opstand_hoog_mm"),
+                      "opstand_laag_mm": enrich.get("opstand_laag_mm")}
+        _dos, view, meld = dossier.verwerk_run(pandid, objecten_rd, adres=titel,
+                                               pand=panddata, dak=dak_feiten)
+
+        # 3) meerpagina-opbouw uit de dossier-view
         paginas = bd.bouw_paginas(footprints, enrich=enrich, panddata=panddata,
-                                  meta=meta, objecten=objecten_rd,
-                                  vision_status=vision_status, dakvlakken=dakvlak_polys)
+                                  meta=meta, objecten=view,
+                                  vision_status=vision_status, dakvlakken=dakvlak_polys,
+                                  meldingen=meld)
 
         # 3) per pagina de luchtfoto met objecten/omtrek
         if req.luchtfoto:
@@ -278,4 +290,23 @@ def specblad(req: SpecbladReq):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"open-data/vision fout: {e}")
 
-VERSION = "r5-2026-09-21"
+class OordeelReq(BaseModel):
+    pandid: str
+    nummer: int | None = None      # nummer [n] van de laatste specblad
+    obj_id: str | None = None      # of direct het object-id
+    actie: str = "weg"             # "weg" | "behouden" | "type"
+    waarde: str | None = None      # bij actie "type": het nieuwe type
+
+
+@app.post("/oordeel")
+def oordeel(req: OordeelReq):
+    """Mens-in-de-lus: keur een object af, behoud het, of herlabel het.
+    Blijft plakken over volgende runs heen."""
+    r = dossier.registreer_oordeel(req.pandid, nummer=req.nummer, obj_id=req.obj_id,
+                                   actie=req.actie, waarde=req.waarde)
+    if not r:
+        raise HTTPException(status_code=404, detail="dak of object niet gevonden")
+    return r
+
+
+VERSION = "r6-2026-09-22"

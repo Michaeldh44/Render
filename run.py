@@ -18,6 +18,7 @@ import luchtfoto as lf
 import render
 import objecten as objmod
 import segment as segmod
+import dossier
 
 
 def main():
@@ -57,7 +58,7 @@ def main():
         if args.vision:
             res = objmod.analyse(ov, frame=mlf["frame"])
             vision_status = res.get("vision")
-            objecten_rd = (segmod.koppel_labels(contouren, res.get("objecten", []))
+            objecten_rd = (segmod.combineer(contouren, res.get("objecten", []))
                            if contouren else res.get("objecten", []))
             rects = bd.polys_from_vision(res.get("dakvlakken", []))
             if rects:
@@ -65,12 +66,24 @@ def main():
             print(f"  segmentatie: {len(contouren)} contouren | vision: {vision_status} | "
                   f"{len(dakvlak_polys or [])} dakvlakken", file=sys.stderr)
         else:
-            objecten_rd = segmod.koppel_labels(contouren, [])
+            objecten_rd = segmod.combineer(contouren, [])
             vision_status = "vision uit (verzoek)"
 
+    # detecties in het DOSSIER; PDF wordt een view daarop
+    pandid = pandids[0] if pandids else f"geen-{args.ref}"
+    dak_feiten = {"daktype": "plat" if enrich.get("is_plat", True) else "hellend",
+                  "dakhoogte_m": enrich.get("dakhoogte_m"),
+                  "opstand_hoog_mm": enrich.get("opstand_hoog_mm"),
+                  "opstand_laag_mm": enrich.get("opstand_laag_mm")}
+    _dos, view, meld = dossier.verwerk_run(pandid, objecten_rd, adres=titel,
+                                           pand=panddata, dak=dak_feiten)
+    print(f"  dossier {pandid}: {len(view)} object(en), {len(meld)} melding(en)",
+          file=sys.stderr)
+
     paginas = bd.bouw_paginas(footprints, enrich=enrich, panddata=panddata,
-                              meta=meta, objecten=objecten_rd,
-                              vision_status=vision_status, dakvlakken=dakvlak_polys)
+                              meta=meta, objecten=view,
+                              vision_status=vision_status, dakvlakken=dakvlak_polys,
+                              meldingen=meld)
 
     if args.luchtfoto:
         opstand = {"hoog": enrich.get("opstand_hoog_mm"),
@@ -96,4 +109,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-VERSION = "r5-2026-09-21"
+VERSION = "r6-2026-09-22"

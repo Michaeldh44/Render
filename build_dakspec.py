@@ -76,7 +76,7 @@ def split_dakvlakken(footprint, rects, min_area=5.0):
     return [main] + exts
 
 
-def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, objecten=None, vision_status=None, dakvlakken_expliciet=None):
+def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, objecten=None, vision_status=None, dakvlakken_expliciet=None, meldingen=None):
     """
     footprints : list[shapely Polygon] in RD (meters)
     dakvlakken_expliciet : expliciete deelvlak-polygonen (uit Vision-splitsing);
@@ -189,12 +189,16 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
         from collections import Counter
         telling = Counter(o["type"] for o in objecten_lijst)
         samenvatting = ", ".join(f"{n}x {OBJ_LABEL.get(t, t)}" for t, n in telling.items())
-        dakgegevens.append({"label": "Objecten op dak (Vision)", "waarde": samenvatting,
+        dakgegevens.append({"label": "Objecten op dak (segmentatie + Vision)", "waarde": samenvatting,
                             "eenheid": "", "maatklasse": "C"})
     else:
         vs = vision_status or "uit"
         dakgegevens.append({"label": "Objecten op dak (Vision)",
                             "waarde": f"geen herkend \u00b7 status: {vs}", "eenheid": ""})
+    if meldingen:
+        dakgegevens.append({"label": "Te controleren (mens-in-de-lus)",
+                            "waarde": f"{len(meldingen)} object(en) verdwenen sinds vorige run",
+                            "eenheid": "", "maatklasse": "C"})
 
     opbouw = opbouw or {
         "kop": "OPBOUW (advies \u2014 nog niet gemeten)",
@@ -255,7 +259,7 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
 
 
 def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=None,
-                 vision_status=None, dakvlakken=None):
+                 vision_status=None, dakvlakken=None, meldingen=None):
     """OVERZICHT + één pagina per dakvlak. `dakvlakken` = expliciete deelvlak-
     polygonen (uit Vision-splitsing); zonder dat valt hij terug op de panden.
     Geeft list van {spec, footprint, objecten, label, dakvlakken}."""
@@ -267,7 +271,7 @@ def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=Non
 
     ov = build(footprints, enrich=enrich, panddata=panddata, meta=meta,
                objecten=objecten, vision_status=vision_status,
-               dakvlakken_expliciet=(polys if dakvlakken else None))
+               dakvlakken_expliciet=(polys if dakvlakken else None), meldingen=meldingen)
     ov["pagina_label"] = "OVERZICHT"
     paginas = [{"spec": ov, "footprint": union, "objecten": objecten,
                 "dakvlakken": gelabeld, "label": "A"}]
@@ -284,4 +288,4 @@ def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=Non
                             "dakvlakken": None, "label": L})
     return paginas
 
-VERSION = "r5-2026-09-21"
+VERSION = "r6-2026-09-22"
