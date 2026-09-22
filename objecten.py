@@ -134,4 +134,120 @@ def analyse(image_path, frame=None):
                            "poly_rd": poly_rd, **(geo or {})})
     return {"objecten": objecten, "dakvlakken": dakvlakken, "vision": "ok"}
 
+
+KEUR_PROMPT = """Je bent een ervaren dakinspecteur die een automatische dakscan CONTROLEERT.
+Dit is een loodrechte luchtfoto van een PLAT dak. Een segmentatie-algoritme heeft
+kandidaat-objecten OMLIJND en met een ROOD NUMMER gemarkeerd.
+
+Beoordeel als inspecteur ELK genummerd object kritisch:
+- "echt": is dit een ECHT dakobject, of is het gewoon dakhuid / schaduw / een vlek / een
+  reflectie? Wees streng: een "lichtstraat" of "paneel" dat een groot deel van het dak
+  beslaat is vrijwel altijd dakhuid (echt=false).
+- "type": wat is het WERKELIJK? (zonnepaneel, lichtstraat, lichtkoepel, installatie,
+  schoorsteen, dakdoorvoer, dakraam, overig)
+- "zekerheid": hoog | midden | laag
+- "reden": heel kort waarom (bv. "dakhuid, geen object" of "duidelijk zonnepaneelveld").
+
+Noem daarnaast objecten die je DUIDELIJK ziet maar die NIET genummerd zijn ("gemist").
+
+Geef UITSLUITEND geldige JSON (geen uitleg, geen ```):
+{
+ "oordeel":[{"nr":1,"echt":true,"type":"zonnepaneel","zekerheid":"hoog","reden":"kort"}],
+ "gemist":[{"type":"dakdoorvoer","x_frac":0.0,"y_frac":0.0,"breedte_frac":0.0,"hoogte_frac":0.0,"reden":"kort"}]
+}"""
+
+
+def _rd_to_px(x, y, W, H, frame):
+    ox, oy = frame["o"]; dux, duy = frame["du"]; dvx, dvy = frame["dv"]
+    det = dux*dvy - duy*dvx
+    if abs(det) < 1e-9:
+        return (0, 0)
+    bx, by = x - ox, y - oy
+    xf = (bx*dvy - by*dvx) / det
+    yf = (dux*by - duy*bx) / det
+    return (int(xf*W), int(yf*H))
+
+
+def _teken_nummers(image_path, objs, frame):
+    """Teken het volgnummer van elk object op een kopie van de ortho, zodat de
+    keurmeester per nummer kan oordelen. Geeft het pad van de controle-afbeelding."""
+    import cv2
+    img = cv2.imread(image_path)
+    if img is None:
+        return None
+    H, W = img.shape[:2]
+    for i, o in enumerate(objs, 1):
+        if not o.get("rd"):
+            continue
+        px, py = _rd_to_px(o["rd"][0], o["rd"][1], W, H, frame)
+        if o.get("poly_rd"):
+            pts = [_rd_to_px(x, y, W, H, frame) for (x, y) in o["poly_rd"]]
+            import numpy as np
+            cv2.polylines(img, [np.array(pts, np.int32)], True, (0, 90, 255), 2)
+        cv2.putText(img, str(i), (px-8, py+6), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (0, 0, 0), 4, cv2.LINE_AA)
+        cv2.putText(img, str(i), (px-8, py+6), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (0, 0, 255), 2, cv2.LINE_AA)
+    out = image_path.rsplit(".", 1)[0] + "_keur.png"
+    cv2.imwrite(out, img)
+    return out
+
+
+def keur(image_path, objs, frame):
+    """Vision als KEURMEESTER: beoordeelt de genummerde segmentatie-objecten.
+    Geeft {"oordeel": {nr: {echt,type,zekerheid,reden}}, "gemist": [...],
+    "keuring": status}. Mag alleen schrappen/herlabelen - geen geometrie tekenen.
+    Faalt veilig: zonder key of bij een fout blijft de rest van de scan werken."""
+    leeg = {"oordeel": {}, "gemist": []}
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return {**leeg, "keuring": "uit (geen ANTHROPIC_API_KEY)"}
+    if not objs:
+        return {**leeg, "keuring": "geen objecten om te keuren"}
+    ctrl = _teken_nummers(image_path, objs, frame)
+    if not ctrl:
+        return {**leeg, "keuring": "controle-afbeelding mislukt"}
+
+    data = base64.standard_b64encode(open(ctrl, "rb").read()).decode()
+    body = {"model": MODEL, "max_tokens": 3000, "messages": [{"role": "user", "content": [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
+        {"type": "text", "text": KEUR_PROMPT}]}]}
+    headers = {"x-api-key": key, "anthropic-version": "2023-06-01",
+               "content-type": "application/json"}
+    ws = os.environ.get("ANTHROPIC_WORKSPACE_ID")
+    if ws:
+        headers["anthropic-workspace-id"] = ws
+    try:
+        r = requests.post(API_URL, headers=headers, json=body, timeout=90)
+    except requests.RequestException as e:
+        return {**leeg, "keuring": f"netwerkfout: {e}"}
+    if r.status_code != 200:
+        return {**leeg, "keuring": f"fout {r.status_code}: {r.text[:300]}"}
+
+    txt = "".join(b.get("text", "") for b in r.json().get("content", [])
+                  if b.get("type") == "text")
+    a, b = txt.find("{"), txt.rfind("}")
+    try:
+        js = json.loads(txt[a:b+1]) if a != -1 else {}
+    except json.JSONDecodeError:
+        return {**leeg, "keuring": "kon keuring-JSON niet lezen"}
+
+    oordeel = {}
+    for v in js.get("oordeel", []):
+        try:
+            nr = int(v.get("nr"))
+        except (TypeError, ValueError):
+            continue
+        oordeel[nr] = {"echt": v.get("echt", True), "type": v.get("type"),
+                       "zekerheid": v.get("zekerheid", "midden"),
+                       "reden": v.get("reden", "")}
+    gemist = []
+    for g in js.get("gemist", []):
+        geo = _frac_to_rd(g, frame) or {}
+        gemist.append({"type": g.get("type", "overig"),
+                       "omschrijving": g.get("reden", "door keurmeester gezien"),
+                       "zekerheid": "laag", **geo})
+    return {"oordeel": oordeel, "gemist": gemist, "keuring": "ok"}
+
+
 VERSION = "r6-2026-09-22"

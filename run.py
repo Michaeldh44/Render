@@ -63,7 +63,14 @@ def main():
             rects = bd.polys_from_vision(res.get("dakvlakken", []))
             if rects:
                 dakvlak_polys = bd.split_dakvlakken(union, rects)
+            k = objmod.keur(ov, objecten_rd, mlf["frame"])   # keurmeester
+            for i, o in enumerate(objecten_rd, 1):
+                if i in k["oordeel"]:
+                    o["keuring"] = k["oordeel"][i]
+            objecten_rd += k["gemist"]
+            afgekeurd = sum(1 for v in k["oordeel"].values() if v.get("echt") is False)
             print(f"  segmentatie: {len(contouren)} contouren | vision: {vision_status} | "
+                  f"keuring: {k['keuring']} ({afgekeurd} afgekeurd, {len(k['gemist'])} gemist) | "
                   f"{len(dakvlak_polys or [])} dakvlakken", file=sys.stderr)
         else:
             objecten_rd = segmod.combineer(contouren, [])

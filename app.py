@@ -247,6 +247,13 @@ def specblad(req: SpecbladReq):
                 rects = bd.polys_from_vision(res.get("dakvlakken", []))
                 if rects:
                     dakvlak_polys = bd.split_dakvlakken(union, rects)
+                # KEURMEESTER: Vision beoordeelt de genummerde objecten van de segmenter
+                k = objecten.keur(ov_img, objecten_rd, meta_lf["frame"])
+                for i, o in enumerate(objecten_rd, 1):
+                    if i in k["oordeel"]:
+                        o["keuring"] = k["oordeel"][i]
+                objecten_rd += k["gemist"]                 # gemiste objecten (maatklasse C)
+                vision_status = f"{vision_status} | keuring: {k['keuring']}"
             else:
                 objecten_rd = segment.combineer(contouren, [])
                 vision_status = "vision uit (verzoek)"

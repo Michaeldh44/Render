@@ -67,9 +67,12 @@ def _nu():
 
 
 # ---------- claims --------------------------------------------------------
-def claim(bron, soort, waarde, confidence):
-    return {"bron": bron, "soort": soort, "waarde": waarde,
-            "confidence": round(float(confidence), 3), "ts": _nu()}
+def claim(bron, soort, waarde, confidence, notitie=None):
+    c = {"bron": bron, "soort": soort, "waarde": waarde,
+         "confidence": round(float(confidence), 3), "ts": _nu()}
+    if notitie:
+        c["notitie"] = notitie
+    return c
 
 
 def voeg_claim_toe(dossier, obj_id, c):
@@ -170,7 +173,7 @@ def resolve(obj):
         gebr_keep = any(c["bron"] == "gebruiker" and c["soort"] == "oordeel"
                         and c["waarde"] == "behouden" for c in claims)
         if keuring and keuring["waarde"] in ("geen object", "afkeuren") and not gebr_keep:
-            status = "afgekeurd"
+            status = "betwijfeld"          # Vision keurt af -> uit de lijst, maar wel gemeld
         else:
             status = "actief"
 
@@ -192,6 +195,9 @@ def resolve(obj):
         score += 0.3                                   # type bevestigd door foto
     if laatste("ahn", "hoogte"):
         score += 0.2                                   # onafhankelijke hoogte-bron
+    kc = laatste("vision-keuring", "oordeel")
+    if kc and kc["waarde"] in ("behouden", "echt", "bevestigd"):
+        score += 0.2                                   # inspecteur bevestigt: echt object
     if gebr_type or any(c["bron"] == "gebruiker" and c["waarde"] == "behouden"
                         for c in claims if c["soort"] == "oordeel"):
         score = 1.0                                    # jij hebt bevestigd
@@ -223,13 +229,20 @@ def view_objecten(dossier, alleen_actief=True):
 
 
 def meldingen(dossier):
-    """Wat de mens moet nakijken: objecten die eerder gezien zijn maar nu niet
-    meer gedetecteerd worden (en niet door de gebruiker zijn afgekeurd)."""
+    """Wat de mens moet nakijken: objecten die verdwenen zijn, of die Vision als
+    keurmeester heeft afgekeurd (betwijfeld) - met de reden erbij."""
     m = []
     for o in dossier["objecten"]:
         r = resolve(o)
         if r["status"] == "verdwenen":
             m.append(f"{r['id']}: eerder gezien, nu niet gedetecteerd - nakijken")
+        elif r["status"] == "betwijfeld":
+            reden = ""
+            for c in o["claims"]:
+                if c["bron"] == "vision-keuring" and c["soort"] == "oordeel" and c.get("notitie"):
+                    reden = f" ({c['notitie']})"
+            m.append(f"{r['id']}: Vision beoordeelt dit als geen echt object{reden} - "
+                     f"niet meegeteld, controleer")
     return m
 
 
@@ -252,10 +265,23 @@ def detecties_uit_objecten(objecten_rd):
             geo_bron, geo_conf = "vision-label", 0.4
         else:
             continue
-        dets.append({"poly_rd": poly, "m2": m2, "claims": [
-            claim(geo_bron, "geometrie", {"m2": m2}, geo_conf),
-            claim("vision-label", "type", o.get("type", "overig"),
-                  conf.get(o.get("zekerheid", "laag"), 0.3))]})
+        claims = [claim(geo_bron, "geometrie", {"m2": m2}, geo_conf),
+                  claim("vision-label", "type", o.get("type", "overig"),
+                        conf.get(o.get("zekerheid", "laag"), 0.3))]
+        k = o.get("keuring")
+        if k:                                   # de keurmeester heeft dit object beoordeeld
+            z = k.get("zekerheid", "midden")
+            kconf = {"hoog": 0.9, "midden": 0.7, "laag": 0.5}.get(z, 0.7)
+            if k.get("echt") is False:
+                claims.append(claim("vision-keuring", "oordeel", "afkeuren", kconf,
+                                    k.get("reden")))
+            else:
+                claims.append(claim("vision-keuring", "oordeel", "behouden", kconf,
+                                    k.get("reden")))
+                if k.get("type"):               # inspecteur-label overrulet het losse label
+                    tconf = {"hoog": 0.85, "midden": 0.65, "laag": 0.45}.get(z, 0.65)
+                    claims.append(claim("vision-keuring", "type", k["type"], tconf))
+        dets.append({"poly_rd": poly, "m2": m2, "claims": claims})
     return dets
 
 
