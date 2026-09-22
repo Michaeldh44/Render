@@ -183,3 +183,5 @@ def dak_eigenschappen(pandid):
         except requests.RequestException:
             continue
     return {}
+
+VERSION = "r4-2026-09-21"

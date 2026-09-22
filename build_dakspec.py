@@ -277,3 +277,5 @@ def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=Non
             paginas.append({"spec": sp, "footprint": poly, "objecten": obj_i,
                             "dakvlakken": None, "label": L})
     return paginas
+
+VERSION = "r4-2026-09-21"

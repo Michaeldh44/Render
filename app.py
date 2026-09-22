@@ -65,7 +65,13 @@ def diag(adres: str = "Roode Wildemanweg 45, Wormerveer"):
     """Diagnose: ziet de container de key, en wat geeft 3D BAG terug?"""
     import os, requests
     out = {"key_present": bool(os.environ.get("ANTHROPIC_API_KEY")),
-           "vision_model": objecten.MODEL}
+           "vision_model": objecten.MODEL,
+           "versies": {"geo_sources": getattr(gs, "VERSION", "?"),
+                       "luchtfoto": getattr(lf, "VERSION", "?"),
+                       "objecten": getattr(objecten, "VERSION", "?"),
+                       "build_dakspec": getattr(bd, "VERSION", "?"),
+                       "render": getattr(rnd, "VERSION", "?"),
+                       "app": globals().get("VERSION", "?")}}
     if out["key_present"]:
         try:
             mh = {"x-api-key": os.environ["ANTHROPIC_API_KEY"],
@@ -266,3 +272,5 @@ def specblad(req: SpecbladReq):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"open-data/vision fout: {e}")
+
+VERSION = "r4-2026-09-21"

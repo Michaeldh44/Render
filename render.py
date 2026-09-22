@@ -296,3 +296,5 @@ def render(spec_path, out_path):
 
 if __name__ == "__main__":
     render(sys.argv[1], sys.argv[2])
+
+VERSION = "r4-2026-09-21"

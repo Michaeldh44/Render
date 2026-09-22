@@ -243,3 +243,5 @@ def haal(bounds, outfile, footprint=None, objecten=None, opstand=None,
     dv_rd = (rd(Umin, Vmin)[0]-o_rd[0], rd(Umin, Vmin)[1]-o_rd[1])
     return {"bestand": outfile, "layer": LAYER, "stand_in": stand_in,
             "frame": {"o": o_rd, "du": du_rd, "dv": dv_rd}}
+
+VERSION = "r4-2026-09-21"
