@@ -184,4 +184,4 @@ def dak_eigenschappen(pandid):
             continue
     return {}
 
-VERSION = "r5-2026-09-21"
+VERSION = "r6-2026-09-22"

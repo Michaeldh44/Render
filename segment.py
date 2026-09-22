@@ -16,6 +16,8 @@ import cv2
 import numpy as np
 from shapely.geometry import Polygon
 
+CLUSTER_M = 0.8   # aaneenliggende panelen binnen deze afstand -> 1 veld
+
 
 def _rd_of(px, py, W, H, frame):
     xf, yf = px / W, py / H
@@ -91,6 +93,12 @@ def koppel_labels(contouren, vision_objs, max_afstand=3.0):
     return out
 
 
+def _mperpx(W, H, frame):
+    import math
+    dux, duy = frame["du"]; dvx, dvy = frame["dv"]
+    return (math.hypot(dux, duy) / W + math.hypot(dvx, dvy) / H) / 2
+
+
 def segmenteer(image_path, frame, footprint=None, min_m2=1.5):
     img = cv2.imread(image_path)
     if img is None:
@@ -105,26 +113,62 @@ def segmenteer(image_path, frame, footprint=None, min_m2=1.5):
     donker = ((gray < max(40, med - 55)).astype(np.uint8)) * 255   # panelen
     licht = ((gray > min(235, med + 55)).astype(np.uint8)) * 255   # daglicht
 
+    mpp = _mperpx(W, H, frame)
+    clus = max(3, int(round(CLUSTER_M / mpp)))        # cluster-kernel (panelen)
+
     objs = []
-    for kind, binm in (("zonnepaneel", donker), ("lichtstraat", licht)):
-        for c in _contours(binm, roof):
+    for kind, binm, extra_close in (("zonnepaneel", donker, clus),
+                                    ("lichtstraat", licht, 0)):
+        m = cv2.bitwise_and(binm, roof)
+        k = np.ones((5, 5), np.uint8)
+        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k)
+        m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k, iterations=2)
+        if extra_close:                                # panelen samenvoegen
+            kk = np.ones((extra_close, extra_close), np.uint8)
+            m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kk)
+        cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in cnts:
             if cv2.contourArea(c) < 30:
                 continue
-            approx = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
-            poly_rd = [_rd_of(p[0][0], p[0][1], W, H, frame) for p in approx]
-            if len(poly_rd) < 3:
-                continue
-            try:
-                shp = Polygon(poly_rd).buffer(0)
-            except Exception:
-                continue
-            if shp.is_empty or shp.area < min_m2:
-                continue
-            rr = cv2.minAreaRect(c)               # (cx,cy),(w,h),hoek
+            rr = cv2.minAreaRect(c)                    # strakke rechthoek
             (wpx, hpx) = rr[1]
-            objs.append({"type": kind, "poly_rd": [list(p) for p in poly_rd],
-                         "m2": round(shp.area, 2),
-                         "rd": (shp.centroid.x, shp.centroid.y)})
+            w_m, h_m = wpx * mpp, hpx * mpp
+            m2 = round(w_m * h_m, 2)
+            if m2 < min_m2:
+                continue
+            box = cv2.boxPoints(rr)                    # 4 rechte hoeken
+            poly_rd = [_rd_of(float(px), float(py), W, H, frame) for (px, py) in box]
+            cx, cy = rr[0]
+            objs.append({"type": kind,
+                         "poly_rd": [list(p) for p in poly_rd], "m2": m2,
+                         "rd": _rd_of(float(cx), float(cy), W, H, frame),
+                         "afm_m": (round(max(w_m, h_m), 2), round(min(w_m, h_m), 2))})
     return objs
 
-VERSION = "r5-2026-09-21"
+
+
+def combineer(contouren, vision_objs, max_afstand=3.0):
+    """Segmentatie-contouren (met label) + Vision-objecten die GEEN contour
+    kregen (bv. kleine doorvoeren) als los blok, zodat die niet verdwijnen."""
+    from shapely.geometry import Point, Polygon as _P
+    labeled = koppel_labels(contouren, vision_objs, max_afstand)
+    polys = []
+    for c in contouren:
+        try:
+            polys.append(_P(c["poly_rd"]).buffer(0.5))
+        except Exception:
+            pass
+    rest = []
+    for v in vision_objs or []:
+        if not v.get("rd"):
+            continue
+        p = Point(*v["rd"])
+        if not any(pl.contains(p) for pl in polys):
+            rest.append({"type": v.get("type", "overig"),
+                         "omschrijving": v.get("omschrijving", ""),
+                         "zekerheid": v.get("zekerheid", "laag"),
+                         "rd": v["rd"], "grootte_m": v.get("grootte_m") or (0.6, 0.6)})
+    return labeled + rest
+
+
+VERSION = "r6-2026-09-22"

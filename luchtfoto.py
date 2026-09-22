@@ -249,4 +249,4 @@ def haal(bounds, outfile, footprint=None, objecten=None, opstand=None,
     return {"bestand": outfile, "layer": LAYER, "stand_in": stand_in,
             "frame": {"o": o_rd, "du": du_rd, "dv": dv_rd}}
 
-VERSION = "r5-2026-09-21"
+VERSION = "r6-2026-09-22"
