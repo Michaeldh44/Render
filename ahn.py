@@ -67,16 +67,12 @@ def _wcs_exception(content):
     return None
 
 
-def haal_dsm(bounds, marge=3.0, timeout=60):
-    """Haal het DSM-raster voor bounds (minx,miny,maxx,maxy in RD).
-    Geeft {grid, bbox, res, status} of {grid:None, status:reden} bij een fout.
-    grid[row][col]: row 0 = noord (maxy). NoData -> NaN."""
+FORMAT_KANDIDATEN = ["image/tiff", "GEOTIFF_16", "GeoTIFF", "GTiff", "GEOTIFF_FLOAT32"]
+
+
+def _getcoverage(fmt, minx, miny, maxx, maxy, W, H, timeout):
+    """Eén GetCoverage-poging met een bepaald FORMAT. Geeft (arr|None, status)."""
     import requests
-    minx, miny, maxx, maxy = bounds
-    minx -= marge; miny -= marge; maxx += marge; maxy += marge
-    W = max(1, int(round((maxx - minx) / RES)))
-    H = max(1, int(round((maxy - miny) / RES)))
-    fmt = os.environ.get("DAKSCAN_AHN_FORMAT", "GEOTIFF_FLOAT32")
     params = {"SERVICE": "WCS", "VERSION": "1.0.0", "REQUEST": "GetCoverage",
               "FORMAT": fmt, "COVERAGE": COVERAGE_DSM,
               "BBOX": f"{minx},{miny},{maxx},{maxy}",
@@ -85,27 +81,43 @@ def haal_dsm(bounds, marge=3.0, timeout=60):
     try:
         r = requests.get(WCS, params=params, timeout=timeout)
     except requests.RequestException as e:
-        return {"grid": None, "status": f"netwerkfout: {e}"}
+        return None, f"netwerkfout: {e}"
     if r.status_code != 200 or not r.content:
-        return {"grid": None, "status": f"fout {r.status_code}: {r.text[:200]}"}
+        return None, f"fout {r.status_code}: {r.text[:160]}"
     fout = _wcs_exception(r.content)
     if fout:
-        return {"grid": None, "status": f"WCS-exception: {fout}"}
+        return None, f"WCS-exception: {fout}"
     pad = "/tmp/ahn_dsm.tif"
     open(pad, "wb").write(r.content)
     arr = _lees_raster(pad)
     if arr is None:
         ct = r.headers.get("content-type", "?")
-        kop = r.content[:16].hex()
-        return {"grid": None,
-                "status": f"raster onleesbaar (content-type={ct}, {len(r.content)} bytes, "
-                          f"begin={kop})"}
-    arr = np.asarray(arr, dtype=np.float32)
-    if arr.ndim == 3:
-        arr = arr[:, :, 0]
-    arr[(arr > 1e4) | (arr < -1e3)] = np.nan          # PDOK nodata (3.4e38 / -32768)
-    return {"grid": arr, "bbox": (minx, miny, maxx, maxy), "res": RES,
-            "H": arr.shape[0], "W": arr.shape[1], "status": "ok"}
+        return None, f"raster onleesbaar (content-type={ct}, {len(r.content)} bytes)"
+    return arr, "ok"
+
+
+def haal_dsm(bounds, marge=3.0, timeout=60):
+    """Haal het DSM-raster voor bounds (minx,miny,maxx,maxy in RD). Probeert de
+    FORMAT-kandidaten tot er één een leesbaar raster geeft (env DAKSCAN_AHN_FORMAT
+    pint desgewenst één formaat). grid[row][col]: row 0 = noord. NoData -> NaN."""
+    minx, miny, maxx, maxy = bounds
+    minx -= marge; miny -= marge; maxx += marge; maxy += marge
+    W = max(1, int(round((maxx - minx) / RES)))
+    H = max(1, int(round((maxy - miny) / RES)))
+    vast = os.environ.get("DAKSCAN_AHN_FORMAT")
+    formaten = [vast] if vast else FORMAT_KANDIDATEN
+    laatste = "geen poging"
+    for fmt in formaten:
+        arr, status = _getcoverage(fmt, minx, miny, maxx, maxy, W, H, timeout)
+        laatste = f"{fmt}: {status}"
+        if arr is not None:
+            arr = np.asarray(arr, dtype=np.float32)
+            if arr.ndim == 3:
+                arr = arr[:, :, 0]
+            arr[(arr > 1e4) | (arr < -1e3)] = np.nan   # PDOK nodata (3.4e38 / -32768)
+            return {"grid": arr, "bbox": (minx, miny, maxx, maxy), "res": RES,
+                    "H": arr.shape[0], "W": arr.shape[1], "format": fmt, "status": "ok"}
+    return {"grid": None, "status": f"geen bruikbaar formaat ({laatste})"}
 
 
 def _poly_naar_cellen(poly_rd, info):

@@ -134,6 +134,7 @@ def diag(adres: str = "Roode Wildemanweg 45, Wormerveer"):
                     import numpy as _np
                     geldig = g[~_np.isnan(g)]
                     out["ahn_test"] = {"status": "ok", "coverage": ahn.COVERAGE_DSM,
+                                       "format": ai.get("format"),
                                        "raster": f"{ai['W']}x{ai['H']}",
                                        "nap_min": round(float(geldig.min()), 2) if geldig.size else None,
                                        "nap_max": round(float(geldig.max()), 2) if geldig.size else None}
