@@ -12,7 +12,7 @@ Maatklasse-logica (de betrouwbaarheidslaag):
 Verdict blijft NEEDS_REVIEW tot een inmeting valideert.
 """
 from datetime import datetime, timezone
-from shapely.geometry import mapping, Point
+from shapely.geometry import mapping, Point, Polygon, box
 from shapely.ops import unary_union
 
 SIMPLIFY_M = 0.10          # vereenvoudig ringen voor de tekening (10 cm)
@@ -38,6 +38,43 @@ def _largest_polygon(geom):
         return None
     parts = [g for g in getattr(geom, "geoms", [geom]) if g.geom_type == "Polygon"]
     return max(parts, key=lambda p: p.area) if parts else None
+
+
+def _obj_poly(o):
+    """Polygoon van een object: maatvaste contour indien aanwezig, anders een
+    kader uit rd + grootte_m."""
+    if o.get("poly_rd"):
+        try:
+            return Polygon(o["poly_rd"]).buffer(0)
+        except Exception:
+            return None
+    if o.get("rd") and o.get("grootte_m"):
+        x, y = o["rd"]; w, h = o["grootte_m"]
+        return box(x - w/2, y - h/2, x + w/2, y + h/2)
+    return None
+
+
+def dedup_objecten(objecten, min_bevat=2, dekking=0.5):
+    """Verwijder overbodige 'verzamelvakken': een object dat min_bevat of meer
+    ANDERE (kleinere) objecten grotendeels omvat, is een dubbeling bovenop echte
+    detecties (zoals een scheve box over losse panelen) en gaat eruit."""
+    polys = [(o, _obj_poly(o)) for o in objecten]
+    polys = [(o, p) for (o, p) in polys if p is not None and p.area > 0]
+    weg = set()
+    for i, (o, p) in enumerate(polys):
+        bevat = 0
+        for j, (o2, p2) in enumerate(polys):
+            if i == j or p2.area >= p.area * 0.8:
+                continue
+            try:
+                inter = p.intersection(p2).area
+            except Exception:
+                continue
+            if p2.area and inter / p2.area > dekking:
+                bevat += 1
+        if bevat >= min_bevat:
+            weg.add(id(o))
+    return [o for o in objecten if id(o) not in weg]
 
 
 def polys_from_vision(vision_dakvlakken):
