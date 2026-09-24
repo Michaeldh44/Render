@@ -78,6 +78,7 @@ def main():
             vision_status = "vision uit (verzoek)"
 
     # detecties in het DOSSIER; PDF wordt een view daarop
+    objecten_rd = bd.dedup_objecten(objecten_rd)
     pandid = pandids[0] if pandids else f"geen-{args.ref}"
     dak_feiten = {"daktype": "plat" if enrich.get("is_plat", True) else "hellend",
                   "dakhoogte_m": enrich.get("dakhoogte_m"),
@@ -115,7 +116,8 @@ def main():
             fp = p["footprint"]
             img = f"{base}_p{i}.png"
             mlf = lf.haal(fp.bounds, img, footprint=fp, objecten=p["objecten"],
-                          opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"])
+                          opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"],
+                          afschot=(afschot if i == 0 else None))
             p["spec"]["dakvisual"].update({"type": "image", "bestand": img,
                 "onderschrift": f"PDOK-luchtfoto ({mlf['layer']}) met meet-omtrek"
                                 + (" en objecten (Vision)" if p["objecten"] else "")})

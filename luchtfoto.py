@@ -83,7 +83,7 @@ def _angle(geom):
 
 
 def haal(bounds, outfile, footprint=None, objecten=None, opstand=None,
-         label="A", dakvlakken=None, stand_in=False):
+         label="A", dakvlakken=None, stand_in=False, afschot=None):
     b = _padded(bounds, 0.28)
     W0, H0 = _dims(b)
     img0 = _standin(W0, H0) if stand_in else _getmap(b, W0, H0)
@@ -234,6 +234,27 @@ def haal(bounds, outfile, footprint=None, objecten=None, opstand=None,
                (tx2-ux*10+perp[0]*6, ty2-uy*10+perp[1]*6),
                (tx2-ux*10-perp[0]*6, ty2-uy*10-perp[1]*6)], fill=(0, 0, 0, 255))
     _label(d, (nx-6, ny-8), "N", size=16)
+
+    # afschotpijl (afstroomrichting + mm/m), vanuit het dakmidden
+    if afschot and afschot.get("rd_richting"):
+        rx, ry = afschot["rd_richting"]
+        L = 8.0
+        s = TP(Cx, Cy)
+        e = TP(Cx + rx*L, Cy + ry*L)
+        dx, dy = e[0]-s[0], e[1]-s[1]
+        mag = math.hypot(dx, dy) or 1
+        ux, uy = dx/mag, dy/mag
+        perp = (-uy, ux)
+        d.line([s, e], fill=(255, 255, 255, 255), width=8)          # witte halo
+        d.line([s, e], fill=(20, 90, 230, 255), width=4)            # blauwe steel
+        d.polygon([e, (e[0]-ux*16+perp[0]*9, e[1]-uy*16+perp[1]*9),
+                   (e[0]-ux*16-perp[0]*9, e[1]-uy*16-perp[1]*9)],
+                  fill=(20, 90, 230, 255))                           # pijlpunt
+        mmpm = afschot.get("mm_per_m")
+        if mmpm is not None:
+            lx, ly = e[0]+8, e[1]-8
+            _label(d, (lx, ly), f"afschot ~{mmpm:.1f} mm/m", size=15,
+                   fg=(20, 60, 160, 255))
 
     # schaalbalk 5 m
     barpx = round(5 * res)

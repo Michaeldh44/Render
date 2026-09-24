@@ -279,6 +279,9 @@ def specblad(req: SpecbladReq):
                 objecten_rd = segment.combineer(contouren, [])
                 vision_status = "vision uit (verzoek)"
 
+        # verwijder overbodige verzamelvakken (scheve box over losse panelen e.d.)
+        objecten_rd = bd.dedup_objecten(objecten_rd)
+
         # 2) detecties in het DOSSIER schrijven; PDF wordt een view daarop
         pandid = pandids[0] if pandids else f"geen-{req.ref}"
         dak_feiten = {"daktype": "plat" if enrich.get("is_plat", True) else "hellend",
@@ -320,7 +323,8 @@ def specblad(req: SpecbladReq):
                 fp = p["footprint"]
                 img = f"/tmp/{req.ref}_p{i}.png"
                 mlf = lf.haal(fp.bounds, img, footprint=fp, objecten=p["objecten"],
-                              opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"])
+                              opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"],
+                              afschot=(afschot if i == 0 else None))
                 p["spec"]["dakvisual"].update({
                     "type": "image", "bestand": img,
                     "onderschrift": f"PDOK-luchtfoto ({mlf['layer']}) met meet-omtrek"

@@ -21,6 +21,7 @@ een fout -> lege meting; de rest van de scan werkt gewoon door.
 """
 import os
 import numpy as np
+from shapely.geometry import Polygon
 
 WCS = "https://service.pdok.nl/rws/ahn/wcs/v1_0"
 COVERAGE_DSM = os.environ.get("DAKSCAN_AHN_COVERAGE", "dsm_05m")
@@ -157,18 +158,52 @@ def dakvlak_hoogte(footprint, info, objecten):
     return _mediaan(info["grid"], roof), roof
 
 
-def meet_objecten(objecten, info, basis):
-    """Per object: opsteek boven het dakvlak. Geeft {obj_id: {...}}.
-    verhoogd=True -> hoogteclaim; afkeuren=True -> AHN betwijfelt (vlak terwijl
-    het type hoort uit te steken)."""
+def _vlakfit(info, mask):
+    """Fit een vlak z = a*(x-x0)+b*(y-y0)+c op de kale-dakcellen.
+    Geeft (a, b, c, x0, y0) of None."""
+    grid = info["grid"]
+    rows, cols = np.where(mask & ~np.isnan(grid))
+    if rows.size < 20:
+        return None
+    minx, miny, maxx, maxy = info["bbox"]; res = info["res"]
+    X = minx + (cols + 0.5) * res
+    Y = maxy - (rows + 0.5) * res
+    Z = grid[rows, cols]
+    x0, y0 = float(X.mean()), float(Y.mean())
+    A = np.c_[X - x0, Y - y0, np.ones(X.size)]
+    try:
+        (a, b, c), *_ = np.linalg.lstsq(A, Z, rcond=None)
+    except Exception:
+        return None
+    return float(a), float(b), float(c), x0, y0
+
+
+def _basis_op(x, y, fit):
+    a, b, c, x0, y0 = fit
+    return a * (x - x0) + b * (y - y0) + c
+
+
+def meet_objecten(objecten, info, basis, fit=None):
+    """Per object: opsteek boven het dakVLAK (lokaal, dus afschot telt niet mee).
+    fit = vlakfit van het kale dak; zonder fit valt hij terug op de mediaan."""
     uit = {}
     for o in objecten:
         if not o.get("poly_rd") or not o.get("id"):
             continue
         h = _mediaan(info["grid"], _masker(o["poly_rd"], info))
-        if h is None or basis is None:
+        if h is None:
             continue
-        opsteek = round(h - basis, 2)
+        if fit is not None:
+            try:
+                cx, cy = tuple(Polygon(o["poly_rd"]).centroid.coords[0])
+                lokaal = _basis_op(cx, cy, fit)
+            except Exception:
+                lokaal = basis
+        else:
+            lokaal = basis
+        if lokaal is None:
+            continue
+        opsteek = round(h - lokaal, 2)
         verhoogd = opsteek >= OPSTEEK_MIN
         afkeuren = (not verhoogd and opsteek < VLAK_MAX
                     and o.get("type") in UITSTEKEND)
@@ -177,29 +212,22 @@ def meet_objecten(objecten, info, basis):
     return uit
 
 
-def afschot(footprint, info, objecten, basis_mask=None):
-    """Afschot uit een vlakfit op het kale dak. Geeft {promille, procent,
-    richting_graden, mm_per_m} of None."""
-    if basis_mask is None:
-        _, basis_mask = dakvlak_hoogte(footprint, info, objecten)
-    grid = info["grid"]
-    rows, cols = np.where(basis_mask & ~np.isnan(grid))
-    if rows.size < 20:
+def afschot(footprint, info, objecten, basis_mask=None, fit=None):
+    """Afschot uit de vlakfit op het kale dak. Geeft {mm_per_m, procent,
+    promille, richting_graden} of None."""
+    if fit is None:
+        if basis_mask is None:
+            _, basis_mask = dakvlak_hoogte(footprint, info, objecten)
+        fit = _vlakfit(info, basis_mask)
+    if fit is None:
         return None
-    minx, miny, maxx, maxy = info["bbox"]; res = info["res"]
-    X = minx + (cols + 0.5) * res
-    Y = maxy - (rows + 0.5) * res
-    Z = grid[rows, cols]
-    X0, Y0 = X.mean(), Y.mean()
-    A = np.c_[X - X0, Y - Y0, np.ones(X.size)]
-    try:
-        (a, b, _), *_ = np.linalg.lstsq(A, Z, rcond=None)
-    except Exception:
-        return None
+    a, b, _, _, _ = fit
     helling = float(np.hypot(a, b))                    # m per m
     richting = float((np.degrees(np.arctan2(-b, -a))) % 360)  # richting van afstroming
+    rr = np.hypot(a, b) or 1.0
     return {"mm_per_m": round(helling * 1000, 1), "procent": round(helling * 100, 2),
-            "promille": round(helling * 1000, 1), "richting_graden": round(richting, 0)}
+            "promille": round(helling * 1000, 1), "richting_graden": round(richting, 0),
+            "rd_richting": (float(-a / rr), float(-b / rr))}  # afstroom-eenheidsvector (RD)
 
 
 def analyse(footprint, objecten, bounds=None):
@@ -210,8 +238,9 @@ def analyse(footprint, objecten, bounds=None):
         return {"status": info.get("status", "geen data") if info else "geen data",
                 "metingen": {}, "afschot": None, "basis_nap": None}
     basis, basis_mask = dakvlak_hoogte(footprint, info, objecten)
-    metingen = meet_objecten(objecten, info, basis)
-    afs = afschot(footprint, info, objecten, basis_mask)
+    fit = _vlakfit(info, basis_mask)
+    metingen = meet_objecten(objecten, info, basis, fit=fit)
+    afs = afschot(footprint, info, objecten, basis_mask, fit=fit)
     return {"status": "ok", "metingen": metingen, "afschot": afs,
             "basis_nap": round(basis, 2) if basis is not None else None}
 
