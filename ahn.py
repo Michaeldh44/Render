@@ -30,18 +30,55 @@ VLAK_MAX = 0.15            # < 15 cm = vlak (voor types die juist horen uit te s
 UITSTEKEND = {"lichtstraat", "lichtkoepel", "installatie", "schoorsteen", "dakraam"}
 
 
+def _lees_raster(pad):
+    """Lees een (mogelijk lastige) float32-GeoTIFF. tifffile eerst (betrouwbaar
+    voor AHN), dan PIL, dan OpenCV. Geeft np.ndarray of None."""
+    try:
+        import tifffile
+        return np.asarray(tifffile.imread(pad))
+    except Exception:
+        pass
+    try:
+        from PIL import Image
+        a = np.array(Image.open(pad))
+        if a.size:
+            return a
+    except Exception:
+        pass
+    try:
+        import cv2
+        a = cv2.imread(pad, cv2.IMREAD_UNCHANGED)
+        if a is not None:
+            return a
+    except Exception:
+        pass
+    return None
+
+
+def _wcs_exception(content):
+    """Herken een WCS/OWS-foutmelding (MapServer geeft die soms met HTTP 200)."""
+    head = content[:2000]
+    if head[:200].lstrip()[:5] == b"<?xml" or b"ServiceException" in head or b"Exception" in head:
+        import re
+        txt = content.decode("utf-8", "ignore")
+        m = (re.search(r"ServiceException[^>]*>(.*?)</", txt, re.S)
+             or re.search(r"ExceptionText>(.*?)</", txt, re.S))
+        return (m.group(1).strip() if m else txt[:200])[:200]
+    return None
+
+
 def haal_dsm(bounds, marge=3.0, timeout=60):
     """Haal het DSM-raster voor bounds (minx,miny,maxx,maxy in RD).
-    Geeft {grid, bbox, res, status} of None-achtige status bij een fout.
+    Geeft {grid, bbox, res, status} of {grid:None, status:reden} bij een fout.
     grid[row][col]: row 0 = noord (maxy). NoData -> NaN."""
     import requests
-    import cv2
     minx, miny, maxx, maxy = bounds
     minx -= marge; miny -= marge; maxx += marge; maxy += marge
     W = max(1, int(round((maxx - minx) / RES)))
     H = max(1, int(round((maxy - miny) / RES)))
+    fmt = os.environ.get("DAKSCAN_AHN_FORMAT", "GEOTIFF_FLOAT32")
     params = {"SERVICE": "WCS", "VERSION": "1.0.0", "REQUEST": "GetCoverage",
-              "FORMAT": "GEOTIFF_FLOAT32", "COVERAGE": COVERAGE_DSM,
+              "FORMAT": fmt, "COVERAGE": COVERAGE_DSM,
               "BBOX": f"{minx},{miny},{maxx},{maxy}",
               "CRS": "EPSG:28992", "RESPONSE_CRS": "EPSG:28992",
               "WIDTH": str(W), "HEIGHT": str(H)}
@@ -51,11 +88,18 @@ def haal_dsm(bounds, marge=3.0, timeout=60):
         return {"grid": None, "status": f"netwerkfout: {e}"}
     if r.status_code != 200 or not r.content:
         return {"grid": None, "status": f"fout {r.status_code}: {r.text[:200]}"}
+    fout = _wcs_exception(r.content)
+    if fout:
+        return {"grid": None, "status": f"WCS-exception: {fout}"}
     pad = "/tmp/ahn_dsm.tif"
     open(pad, "wb").write(r.content)
-    arr = cv2.imread(pad, cv2.IMREAD_UNCHANGED)
+    arr = _lees_raster(pad)
     if arr is None:
-        return {"grid": None, "status": "GeoTIFF niet leesbaar"}
+        ct = r.headers.get("content-type", "?")
+        kop = r.content[:16].hex()
+        return {"grid": None,
+                "status": f"raster onleesbaar (content-type={ct}, {len(r.content)} bytes, "
+                          f"begin={kop})"}
     arr = np.asarray(arr, dtype=np.float32)
     if arr.ndim == 3:
         arr = arr[:, :, 0]
