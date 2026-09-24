@@ -14,6 +14,7 @@ Endpoints:
 Sync endpoints -> FastAPI draait ze in een threadpool, zodat de
 synchrone Playwright-render veilig kan (geen asyncio-conflict).
 """
+import os
 from fastapi import FastAPI, Response, HTTPException
 from pydantic import BaseModel
 from shapely.geometry import Polygon
@@ -27,6 +28,7 @@ import luchtfoto as lf
 import render as rnd
 import objecten
 import segment
+import ahn
 import dossier
 
 app = FastAPI(title="dakscan", version="0.1")
@@ -74,6 +76,7 @@ def diag(adres: str = "Roode Wildemanweg 45, Wormerveer"):
                        "build_dakspec": getattr(bd, "VERSION", "?"),
                        "segment": getattr(segment, "VERSION", "?"),
                        "dossier": getattr(dossier, "VERSION", "?"),
+                       "ahn": getattr(ahn, "VERSION", "?"),
                        "render": getattr(rnd, "VERSION", "?"),
                        "app": globals().get("VERSION", "?")}}
     if out["key_present"]:
@@ -123,6 +126,22 @@ def diag(adres: str = "Roode Wildemanweg 45, Wormerveer"):
             img = "/tmp/diag_ov.png"
             m = lf.haal(u.bounds, img, footprint=u)
             out["vision_test"] = objecten.analyse(img, frame=m["frame"]).get("vision")
+            # AHN-probe: haalt de container het hoogteraster op deze endpoint/laag?
+            try:
+                ai = ahn.haal_dsm(u.bounds)
+                if ai and ai.get("grid") is not None:
+                    g = ai["grid"]
+                    import numpy as _np
+                    geldig = g[~_np.isnan(g)]
+                    out["ahn_test"] = {"status": "ok", "coverage": ahn.COVERAGE_DSM,
+                                       "raster": f"{ai['W']}x{ai['H']}",
+                                       "nap_min": round(float(geldig.min()), 2) if geldig.size else None,
+                                       "nap_max": round(float(geldig.max()), 2) if geldig.size else None}
+                else:
+                    out["ahn_test"] = {"status": ai.get("status") if ai else "geen data",
+                                       "coverage": ahn.COVERAGE_DSM}
+            except Exception as e:
+                out["ahn_test"] = {"status": f"{type(e).__name__}: {e}"}
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"
     return out
@@ -209,6 +228,7 @@ class SpecbladReq(BaseModel):
     ref: str = "zd-poc"
     luchtfoto: bool = True
     vision: bool = True         # Claude Vision voor objecten + dakvlakken
+    ahn: bool = True            # AHN-hoogtecheck (opsteek + afschot)
     formaat: str = "pdf"        # "pdf" of "json"
 
 
@@ -267,11 +287,29 @@ def specblad(req: SpecbladReq):
         _dos, view, meld = dossier.verwerk_run(pandid, objecten_rd, adres=titel,
                                                pand=panddata, dak=dak_feiten)
 
+        # 2b) AHN-hoogtecheck: onafhankelijke bron (opsteek per object + afschot)
+        afschot = None
+        ahn_status = "uit"
+        if req.ahn:
+            a = ahn.analyse(union, view, bounds=union.bounds)
+            ahn_status = a["status"]
+            if a["status"] == "ok":
+                dossier.verwerk_ahn(_dos, a["metingen"])
+                view = dossier.view_objecten(_dos)
+                _dos["_view_order"] = [o["id"] for o in view]
+                dossier.bewaar(_dos)
+                meld = dossier.meldingen(_dos)
+                afschot = a["afschot"]
+                dak_feiten["afschot"] = afschot
+                dak_feiten["ahn_basis_nap"] = a["basis_nap"]
+                _dos["dak"] = dak_feiten
+                dossier.bewaar(_dos)
+
         # 3) meerpagina-opbouw uit de dossier-view
         paginas = bd.bouw_paginas(footprints, enrich=enrich, panddata=panddata,
                                   meta=meta, objecten=view,
                                   vision_status=vision_status, dakvlakken=dakvlak_polys,
-                                  meldingen=meld)
+                                  meldingen=meld, afschot=afschot)
 
         # 3) per pagina de luchtfoto met objecten/omtrek
         if req.luchtfoto:
@@ -286,6 +324,16 @@ def specblad(req: SpecbladReq):
                     "type": "image", "bestand": img,
                     "onderschrift": f"PDOK-luchtfoto ({mlf['layer']}) met meet-omtrek"
                                     + (" en objecten (Vision)" if p["objecten"] else "")})
+
+        # bewaar de genummerde overzichtsfoto voor het review-scherm
+        if req.luchtfoto and paginas:
+            import shutil
+            src = f"/tmp/{req.ref}_p0.png"
+            if os.path.exists(src):
+                beeld = f"/tmp/review_{pandid}.png"
+                shutil.copyfile(src, beeld)
+                _dos["_beeld"] = beeld
+                dossier.bewaar(_dos)
 
         specs = [p["spec"] for p in paginas]
         if req.formaat == "json":
@@ -314,6 +362,128 @@ def oordeel(req: OordeelReq):
     if not r:
         raise HTTPException(status_code=404, detail="dak of object niet gevonden")
     return r
+
+
+@app.get("/beeld")
+def beeld(pandid: str):
+    """De genummerde overzichtsfoto van het laatste specblad (voor /review)."""
+    from fastapi.responses import FileResponse
+    dos = dossier.laad(pandid)
+    pad = (dos or {}).get("_beeld")
+    if not pad or not os.path.exists(pad):
+        raise HTTPException(status_code=404, detail="geen beeld (draai eerst een specblad)")
+    return FileResponse(pad, media_type="image/png")
+
+
+TYPES = ["zonnepaneel", "lichtstraat", "lichtkoepel", "installatie",
+         "schoorsteen", "dakdoorvoer", "dakraam", "overig"]
+
+
+def _review_html(pandid, dos):
+    view = dossier.view_objecten(dos)                       # actieve objecten
+    allen = dossier.view_objecten(dos, alleen_actief=False)
+    nazien = [o for o in allen if o["status"] in ("betwijfeld", "verdwenen")]
+    adres = dos.get("adres", pandid)
+    heeft_beeld = bool(dos.get("_beeld") and os.path.exists(dos["_beeld"]))
+
+    rijen = []
+    for n, o in enumerate(view, 1):
+        opts = "".join(f'<option value="{t}"{" selected" if t==o["type"] else ""}>{t}</option>'
+                       for t in TYPES)
+        m2 = f'{o["m2"]:.1f} m²' if o.get("m2") else ""
+        rijen.append(f"""
+        <tr id="r-{o['id']}">
+          <td class="nr">{n}</td>
+          <td>{o['type']} <span class="mk mk{o['zekerheid']}">{o['zekerheid']}</span></td>
+          <td class="m2">{m2}</td>
+          <td>
+            <select onchange="wijzig('{o['id']}', this.value)">{opts}</select>
+            <button class="weg" onclick="oordeel('{o['id']}','weg')">weg</button>
+          </td>
+        </tr>""")
+
+    nazien_html = ""
+    if nazien:
+        nr = []
+        for o in nazien:
+            reden = "verdwenen sinds vorige scan" if o["status"] == "verdwenen" \
+                else "Vision betwijfelt dit object"
+            nr.append(f"""
+            <tr id="r-{o['id']}">
+              <td>{o['type']} · <span class="dim">{reden}</span></td>
+              <td><button onclick="oordeel('{o['id']}','behouden')">toch behouden</button></td>
+            </tr>""")
+        nazien_html = f"""
+        <h2>Te controleren ({len(nazien)})</h2>
+        <table class="nazien">{''.join(nr)}</table>"""
+
+    beeld_html = (f'<img src="/beeld?pandid={pandid}" alt="dakoverzicht">'
+                  if heeft_beeld else
+                  '<p class="dim">Geen overzichtsfoto beschikbaar — draai eerst een specblad '
+                  'voor dit pand.</p>')
+
+    return f"""<!doctype html><html lang="nl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dakscan review · {adres}</title>
+<style>
+  body{{font:15px/1.5 system-ui,sans-serif;margin:0;background:#f6f7f8;color:#1a1a1a}}
+  header{{background:#1a1a1a;color:#fff;padding:14px 20px}}
+  header b{{font-weight:600}} header .sub{{opacity:.7;font-size:13px}}
+  .wrap{{max-width:1100px;margin:0 auto;padding:20px;display:grid;
+        grid-template-columns:1fr 1fr;gap:24px}}
+  @media(max-width:800px){{.wrap{{grid-template-columns:1fr}}}}
+  img{{width:100%;border:1px solid #ddd;border-radius:6px}}
+  h2{{font-size:15px;margin:18px 0 8px}}
+  table{{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e3e3e3;
+        border-radius:6px;overflow:hidden}}
+  td{{padding:8px 10px;border-bottom:1px solid #f0f0f0;vertical-align:middle}}
+  .nr{{color:#888;width:28px}} .m2{{color:#555;white-space:nowrap;width:70px}}
+  select{{padding:4px;margin-right:6px}}
+  button{{padding:5px 10px;border:1px solid #bbb;background:#fff;border-radius:5px;cursor:pointer}}
+  button.weg{{border-color:#c0392b;color:#c0392b}}
+  button:hover{{background:#f0f0f0}}
+  .dim{{color:#999}} .mk{{font-size:11px;padding:1px 5px;border-radius:3px;color:#fff}}
+  .mkA{{background:#2e7d32}} .mkB{{background:#e08600}} .mkC{{background:#888}}
+  .flash{{opacity:.45;transition:opacity .3s}}
+</style></head><body>
+<header><b>dakscan · review</b> &nbsp; <span class="sub">{adres} · {pandid}</span></header>
+<div class="wrap">
+  <div>{beeld_html}</div>
+  <div>
+    <h2>Objecten op dak ({len(view)})</h2>
+    <table><tbody>{''.join(rijen)}</tbody></table>
+    {nazien_html}
+    <p class="dim" style="margin-top:14px">Klik <b>weg</b> om een fout-object te schrappen,
+    of kies een ander type. Je correctie blijft plakken bij de volgende scan.</p>
+  </div>
+</div>
+<script>
+const PAND = {pandid!r};
+async function post(body){{
+  const r = await fetch('/oordeel',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify(body)}});
+  return r.ok;
+}}
+async function oordeel(id, actie){{
+  const row=document.getElementById('r-'+id); if(row) row.classList.add('flash');
+  if(await post({{pandid:PAND,obj_id:id,actie}})) location.reload();
+  else alert('opslaan mislukt');
+}}
+async function wijzig(id, type){{
+  if(await post({{pandid:PAND,obj_id:id,actie:'type',waarde:type}})) location.reload();
+  else alert('opslaan mislukt');
+}}
+</script></body></html>"""
+
+
+@app.get("/review")
+def review(pandid: str):
+    """Mens-in-de-lus review-scherm: schrap of herlabel objecten met één klik."""
+    from fastapi.responses import HTMLResponse
+    dos = dossier.laad(pandid)
+    if not dos:
+        raise HTTPException(status_code=404, detail="geen dossier voor dit pand")
+    return HTMLResponse(_review_html(pandid, dos))
 
 
 VERSION = "r6-2026-09-22"

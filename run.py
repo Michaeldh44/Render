@@ -18,6 +18,7 @@ import luchtfoto as lf
 import render
 import objecten as objmod
 import segment as segmod
+import ahn
 import dossier
 
 
@@ -87,10 +88,25 @@ def main():
     print(f"  dossier {pandid}: {len(view)} object(en), {len(meld)} melding(en)",
           file=sys.stderr)
 
+    afschot = None
+    a = ahn.analyse(union, view, bounds=union.bounds)
+    print(f"  AHN: {a['status']}", file=sys.stderr)
+    if a["status"] == "ok":
+        dossier.verwerk_ahn(_dos, a["metingen"])
+        view = dossier.view_objecten(_dos)
+        _dos["_view_order"] = [o["id"] for o in view]
+        dossier.bewaar(_dos)
+        meld = dossier.meldingen(_dos)
+        afschot = a["afschot"]
+        verhoogd = sum(1 for m in a["metingen"].values() if m.get("verhoogd"))
+        afgek = sum(1 for m in a["metingen"].values() if m.get("afkeuren"))
+        print(f"  AHN: {verhoogd} verhoogd, {afgek} afgekeurd | afschot {afschot}",
+              file=sys.stderr)
+
     paginas = bd.bouw_paginas(footprints, enrich=enrich, panddata=panddata,
                               meta=meta, objecten=view,
                               vision_status=vision_status, dakvlakken=dakvlak_polys,
-                              meldingen=meld)
+                              meldingen=meld, afschot=afschot)
 
     if args.luchtfoto:
         opstand = {"hoog": enrich.get("opstand_hoog_mm"),

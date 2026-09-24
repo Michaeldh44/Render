@@ -170,10 +170,13 @@ def resolve(obj):
         status = "verdwenen"
     else:
         keuring = laatste("vision-keuring", "oordeel")
+        ahn_oordeel = laatste("ahn", "oordeel")
         gebr_keep = any(c["bron"] == "gebruiker" and c["soort"] == "oordeel"
                         and c["waarde"] == "behouden" for c in claims)
-        if keuring and keuring["waarde"] in ("geen object", "afkeuren") and not gebr_keep:
-            status = "betwijfeld"          # Vision keurt af -> uit de lijst, maar wel gemeld
+        afk = [c for c in (keuring, ahn_oordeel)
+               if c and c["waarde"] in ("geen object", "afkeuren")]
+        if afk and not gebr_keep:
+            status = "betwijfeld"          # Vision of AHN keurt af -> uit de lijst, wel gemeld
         else:
             status = "actief"
 
@@ -194,10 +197,10 @@ def resolve(obj):
     if laatste("vision-label", "type"):
         score += 0.3                                   # type bevestigd door foto
     if laatste("ahn", "hoogte"):
-        score += 0.2                                   # onafhankelijke hoogte-bron
-    kc = laatste("vision-keuring", "oordeel")
-    if kc and kc["waarde"] in ("behouden", "echt", "bevestigd"):
-        score += 0.2                                   # inspecteur bevestigt: echt object
+        score += 0.2                                   # onafhankelijke hoogte-bron -> kan A halen
+    # LET OP: vision-keuring (bevestiging) telt bewust NIET mee in de score.
+    # Vision die zijn eigen segmentatie beaamt is geen onafhankelijke meting;
+    # A blijft voorbehouden aan AHN of jouw bevestiging. Foto-alleen = max B.
     if gebr_type or any(c["bron"] == "gebruiker" and c["waarde"] == "behouden"
                         for c in claims if c["soort"] == "oordeel"):
         score = 1.0                                    # jij hebt bevestigd
@@ -239,10 +242,10 @@ def meldingen(dossier):
         elif r["status"] == "betwijfeld":
             reden = ""
             for c in o["claims"]:
-                if c["bron"] == "vision-keuring" and c["soort"] == "oordeel" and c.get("notitie"):
+                if (c["bron"] in ("vision-keuring", "ahn") and c["soort"] == "oordeel"
+                        and c.get("notitie")):
                     reden = f" ({c['notitie']})"
-            m.append(f"{r['id']}: Vision beoordeelt dit als geen echt object{reden} - "
-                     f"niet meegeteld, controleer")
+            m.append(f"{r['id']}: afgekeurd door controle{reden} - niet meegeteld, controleer")
     return m
 
 
@@ -298,6 +301,20 @@ def verwerk_run(pandid, objecten_rd, adres="", pand=None, dak=None):
     dos["_view_order"] = [o["id"] for o in view]
     bewaar(dos)
     return dos, view, meldingen(dos)
+
+
+def verwerk_ahn(dossier, metingen):
+    """Schrijf AHN-metingen als claims in het dossier (onafhankelijke bron).
+    verhoogd -> hoogteclaim (kan naar A tillen); vlak-terwijl-uitstekend ->
+    ahn-afkeuring -> object 'betwijfeld'. AHN is BLIJVEND (per bron vervangen)."""
+    for oid, mt in metingen.items():
+        if mt.get("verhoogd"):
+            voeg_claim_toe(dossier, oid, claim("ahn", "hoogte",
+                {"opsteek_m": mt["opsteek_m"], "nap_m": mt.get("nap_m")}, 0.9))
+        elif mt.get("afkeuren"):
+            voeg_claim_toe(dossier, oid, claim("ahn", "oordeel", "afkeuren", 0.8,
+                f"AHN: geen verhoging gemeten ({mt['opsteek_m']} m)"))
+    return dossier
 
 
 def registreer_oordeel(pandid, nummer=None, obj_id=None, actie="behouden", waarde=None):

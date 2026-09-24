@@ -76,7 +76,7 @@ def split_dakvlakken(footprint, rects, min_area=5.0):
     return [main] + exts
 
 
-def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, objecten=None, vision_status=None, dakvlakken_expliciet=None, meldingen=None):
+def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, objecten=None, vision_status=None, dakvlakken_expliciet=None, meldingen=None, afschot=None):
     """
     footprints : list[shapely Polygon] in RD (meters)
     dakvlakken_expliciet : expliciete deelvlak-polygonen (uit Vision-splitsing);
@@ -181,10 +181,15 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
         dakgegevens.append({"label": "Opstand / dakrand (hoogte)",
                             "waarde": "n.t.b. (3D BAG niet beschikbaar; typisch 150\u2013300 mm)",
                             "eenheid": "", "maatklasse": "C"})
-    dakgegevens += [
-        {"label": "Afschot", "waarde": "n.t.b. (AHN-koppeling volgt)",
-         "eenheid": "", "maatklasse": "C"},
-    ]
+    if afschot and afschot.get("mm_per_m") is not None:
+        dakgegevens.append(
+            {"label": "Afschot (AHN)",
+             "waarde": f"~ {afschot['mm_per_m']:.1f} mm/m ({afschot['procent']:.2f}%)",
+             "eenheid": "", "maatklasse": "B"})
+    else:
+        dakgegevens.append(
+            {"label": "Afschot", "waarde": "n.t.b. (AHN-koppeling volgt)",
+             "eenheid": "", "maatklasse": "C"})
     if objecten_lijst:
         from collections import Counter
         telling = Counter(o["type"] for o in objecten_lijst)
@@ -259,7 +264,7 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
 
 
 def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=None,
-                 vision_status=None, dakvlakken=None, meldingen=None):
+                 vision_status=None, dakvlakken=None, meldingen=None, afschot=None):
     """OVERZICHT + één pagina per dakvlak. `dakvlakken` = expliciete deelvlak-
     polygonen (uit Vision-splitsing); zonder dat valt hij terug op de panden.
     Geeft list van {spec, footprint, objecten, label, dakvlakken}."""
@@ -271,7 +276,8 @@ def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=Non
 
     ov = build(footprints, enrich=enrich, panddata=panddata, meta=meta,
                objecten=objecten, vision_status=vision_status,
-               dakvlakken_expliciet=(polys if dakvlakken else None), meldingen=meldingen)
+               dakvlakken_expliciet=(polys if dakvlakken else None), meldingen=meldingen,
+               afschot=afschot)
     ov["pagina_label"] = "OVERZICHT"
     paginas = [{"spec": ov, "footprint": union, "objecten": objecten,
                 "dakvlakken": gelabeld, "label": "A"}]
