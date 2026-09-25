@@ -64,7 +64,8 @@ def main():
             rects = bd.polys_from_vision(res.get("dakvlakken", []))
             if rects:
                 dakvlak_polys = bd.split_dakvlakken(union, rects)
-            k = objmod.keur(ov, objecten_rd, mlf["frame"])   # keurmeester
+            ahn.meet_ruw(union, objecten_rd, bounds=union.bounds)   # hoogte vóór keuring
+            k = objmod.keur(ov, objecten_rd, mlf["frame"])   # keurmeester (met hoogte)
             for i, o in enumerate(objecten_rd, 1):
                 if i in k["oordeel"]:
                     o["keuring"] = k["oordeel"][i]
@@ -116,8 +117,7 @@ def main():
             fp = p["footprint"]
             img = f"{base}_p{i}.png"
             mlf = lf.haal(fp.bounds, img, footprint=fp, objecten=p["objecten"],
-                          opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"],
-                          afschot=(afschot if i == 0 else None))
+                          opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"])
             p["spec"]["dakvisual"].update({"type": "image", "bestand": img,
                 "onderschrift": f"PDOK-luchtfoto ({mlf['layer']}) met meet-omtrek"
                                 + (" en objecten (Vision)" if p["objecten"] else "")})

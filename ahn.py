@@ -97,10 +97,26 @@ def _getcoverage(fmt, minx, miny, maxx, maxy, W, H, timeout):
     return arr, "ok"
 
 
+_DSM_CACHE = {}
+
+
 def haal_dsm(bounds, marge=3.0, timeout=60):
     """Haal het DSM-raster voor bounds (minx,miny,maxx,maxy in RD). Probeert de
     FORMAT-kandidaten tot er één een leesbaar raster geeft (env DAKSCAN_AHN_FORMAT
-    pint desgewenst één formaat). grid[row][col]: row 0 = noord. NoData -> NaN."""
+    pint desgewenst één formaat). grid[row][col]: row 0 = noord. NoData -> NaN.
+    Resultaat wordt gecachet op bounds, zodat meet-vooraf en claim-schrijven
+    hetzelfde raster hergebruiken."""
+    sleutel = (round(bounds[0], 1), round(bounds[1], 1),
+               round(bounds[2], 1), round(bounds[3], 1), COVERAGE_DSM)
+    if sleutel in _DSM_CACHE:
+        return _DSM_CACHE[sleutel]
+    res = _haal_dsm(bounds, marge, timeout)
+    if res and res.get("grid") is not None:
+        _DSM_CACHE[sleutel] = res
+    return res
+
+
+def _haal_dsm(bounds, marge=3.0, timeout=60):
     minx, miny, maxx, maxy = bounds
     minx -= marge; miny -= marge; maxx += marge; maxy += marge
     W = max(1, int(round((maxx - minx) / RES)))
@@ -228,6 +244,39 @@ def afschot(footprint, info, objecten, basis_mask=None, fit=None):
     return {"mm_per_m": round(helling * 1000, 1), "procent": round(helling * 100, 2),
             "promille": round(helling * 1000, 1), "richting_graden": round(richting, 0),
             "rd_richting": (float(-a / rr), float(-b / rr))}  # afstroom-eenheidsvector (RD)
+
+
+def meet_ruw(footprint, objecten_rd, bounds=None):
+    """Meet de opsteek per (ruw) object VOORDAT de keurmeester oordeelt, en hangt
+    het aan het object (o['opsteek_m'], o['ahn_verhoogd']). Zo kan Vision met de
+    hoogte erbij keuren. Geeft {status, afschot}. Faalt veilig."""
+    info = haal_dsm(bounds or footprint.bounds)
+    if not info or info.get("grid") is None:
+        return {"status": info.get("status", "geen data") if info else "geen data",
+                "afschot": None}
+    basis, basis_mask = dakvlak_hoogte(footprint, info, objecten_rd)
+    fit = _vlakfit(info, basis_mask)
+    for o in objecten_rd:
+        if not o.get("poly_rd"):
+            continue
+        h = _mediaan(info["grid"], _masker(o["poly_rd"], info))
+        if h is None:
+            continue
+        if fit is not None:
+            try:
+                cx, cy = tuple(Polygon(o["poly_rd"]).centroid.coords[0])
+                lokaal = _basis_op(cx, cy, fit)
+            except Exception:
+                lokaal = basis
+        else:
+            lokaal = basis
+        if lokaal is None:
+            continue
+        opsteek = round(h - lokaal, 2)
+        o["opsteek_m"] = opsteek
+        o["ahn_verhoogd"] = bool(opsteek >= OPSTEEK_MIN)
+    return {"status": "ok", "afschot": afschot(footprint, info, objecten_rd,
+                                               basis_mask, fit=fit)}
 
 
 def analyse(footprint, objecten, bounds=None):

@@ -137,16 +137,20 @@ def analyse(image_path, frame=None):
 
 KEUR_PROMPT = """Je bent een ervaren dakinspecteur die een automatische dakscan CONTROLEERT.
 Dit is een loodrechte luchtfoto van een PLAT dak. Een segmentatie-algoritme heeft
-kandidaat-objecten OMLIJND en met een ROOD NUMMER gemarkeerd.
+kandidaat-objecten OMLIJND en met een ROOD NUMMER gemarkeerd. Bij elk nummer krijg je het
+voorlopige type, de oppervlakte en - indien beschikbaar - de door AHN gemeten OPSTEEK
+(hoogte boven het dakvlak).
 
-Beoordeel als inspecteur ELK genummerd object kritisch:
-- "echt": is dit een ECHT dakobject, of is het gewoon dakhuid / schaduw / een vlek / een
-  reflectie? Wees streng: een "lichtstraat" of "paneel" dat een groot deel van het dak
-  beslaat is vrijwel altijd dakhuid (echt=false).
+Beoordeel als inspecteur ELK genummerd object streng:
+- "echt": is dit een ECHT dakobject, of is het dakhuid / schaduw / een vlek / reflectie?
+  Gebruik de hoogte: een object met opsteek rond 0 m dat GEEN zonnepaneel is (dus een
+  'installatie', 'lichtstraat' of 'lichtkoepel' die plat blijkt) is vrijwel altijd dakhuid
+  -> echt=false. Een lange dunne donkere strook langs de dakrand/opstand is een SCHADUW,
+  geen paneel -> echt=false. Een groot vlak (>25 m²) dat leeg/egaal oogt is dakhuid.
 - "type": wat is het WERKELIJK? (zonnepaneel, lichtstraat, lichtkoepel, installatie,
   schoorsteen, dakdoorvoer, dakraam, overig)
 - "zekerheid": hoog | midden | laag
-- "reden": heel kort waarom (bv. "dakhuid, geen object" of "duidelijk zonnepaneelveld").
+- "reden": heel kort (bv. "plat + leeg = dakhuid" of "schaduw langs dakrand").
 
 Noem daarnaast objecten die je DUIDELIJK ziet maar die NIET genummerd zijn ("gemist").
 
@@ -155,6 +159,17 @@ Geef UITSLUITEND geldige JSON (geen uitleg, geen ```):
  "oordeel":[{"nr":1,"echt":true,"type":"zonnepaneel","zekerheid":"hoog","reden":"kort"}],
  "gemist":[{"type":"dakdoorvoer","x_frac":0.0,"y_frac":0.0,"breedte_frac":0.0,"hoogte_frac":0.0,"reden":"kort"}]
 }"""
+
+
+def _objectlijst_tekst(objs):
+    """Regels '1: type, X m², AHN-opsteek Y m' als context voor de keurmeester."""
+    regels = []
+    for i, o in enumerate(objs, 1):
+        m2 = f"{o['m2']:.1f} m\u00b2" if o.get("m2") else "?"
+        h = (f", AHN-opsteek {o['opsteek_m']:.2f} m" if o.get("opsteek_m") is not None
+             else ", AHN-opsteek onbekend")
+        regels.append(f"{i}: {o.get('type', 'overig')}, {m2}{h}")
+    return "\n".join(regels)
 
 
 def _rd_to_px(x, y, W, H, frame):
@@ -209,9 +224,10 @@ def keur(image_path, objs, frame):
         return {**leeg, "keuring": "controle-afbeelding mislukt"}
 
     data = base64.standard_b64encode(open(ctrl, "rb").read()).decode()
+    tekst = KEUR_PROMPT + "\n\nGENUMMERDE OBJECTEN:\n" + _objectlijst_tekst(objs)
     body = {"model": MODEL, "max_tokens": 3000, "messages": [{"role": "user", "content": [
         {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}},
-        {"type": "text", "text": KEUR_PROMPT}]}]}
+        {"type": "text", "text": tekst}]}]}
     headers = {"x-api-key": key, "anthropic-version": "2023-06-01",
                "content-type": "application/json"}
     ws = os.environ.get("ANTHROPIC_WORKSPACE_ID")

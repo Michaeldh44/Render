@@ -268,7 +268,9 @@ def specblad(req: SpecbladReq):
                 rects = bd.polys_from_vision(res.get("dakvlakken", []))
                 if rects:
                     dakvlak_polys = bd.split_dakvlakken(union, rects)
-                # KEURMEESTER: Vision beoordeelt de genummerde objecten van de segmenter
+                # AHN-opsteek meten VÓÓR de keuring, zodat de inspecteur met hoogte oordeelt
+                ahn.meet_ruw(union, objecten_rd, bounds=union.bounds)
+                # KEURMEESTER: Vision beoordeelt de genummerde objecten (met hoogte-context)
                 k = objecten.keur(ov_img, objecten_rd, meta_lf["frame"])
                 for i, o in enumerate(objecten_rd, 1):
                     if i in k["oordeel"]:
@@ -323,8 +325,7 @@ def specblad(req: SpecbladReq):
                 fp = p["footprint"]
                 img = f"/tmp/{req.ref}_p{i}.png"
                 mlf = lf.haal(fp.bounds, img, footprint=fp, objecten=p["objecten"],
-                              opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"],
-                              afschot=(afschot if i == 0 else None))
+                              opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"])
                 p["spec"]["dakvisual"].update({
                     "type": "image", "bestand": img,
                     "onderschrift": f"PDOK-luchtfoto ({mlf['layer']}) met meet-omtrek"
