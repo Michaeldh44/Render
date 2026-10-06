@@ -343,6 +343,8 @@ def specblad(req: SpecbladReq):
 
         specs = [p["spec"] for p in paginas]
         if req.formaat == "json":
+            for sp in specs:
+                _verrijk_json(sp)
             return specs
         return Response(rnd.render_specs_bytes(specs), media_type="application/pdf")
 
@@ -350,6 +352,28 @@ def specblad(req: SpecbladReq):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"open-data/vision fout: {e}")
+
+def _verrijk_json(spec):
+    """Voor formaat=json (ramingsmodule): tekening (SVG) en luchtfoto (verkleinde JPEG) meesturen."""
+    try:
+        spec["svg"] = rnd.build_svg(spec)
+    except Exception as e:
+        spec["svg_fout"] = str(e)
+    dv = spec.get("dakvisual") or {}
+    pad = dv.get("bestand")
+    if dv.get("type") == "image" and pad and os.path.exists(pad):
+        try:
+            import io, base64
+            from PIL import Image
+            im = Image.open(pad).convert("RGB")
+            im.thumbnail((1400, 1400))
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=78, optimize=True)
+            spec["beeld"] = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+            spec["beeld_onderschrift"] = dv.get("onderschrift", "")
+        except Exception as e:
+            spec["beeld_fout"] = str(e)
+
 
 class OordeelReq(BaseModel):
     pandid: str
