@@ -248,7 +248,7 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
             # alleen wat echt omhoog staat telt mee voor de vorm (geen schaduw/dakhuid ernaast)
             omhoog = zone & (nd >= H_VLAK)
             ml = licht & omhoog
-            md = donker & omhoog & (((B - Br) < -4) | (L < 55))
+            md = donker & omhoog
             gemaakt = False
             # één hoogteblok kan meerdere objecten bevatten (paneelveld naast lichtstraat): splits op kleur
             if ml.sum() * mpp*mpp >= 0.5*MIN_OBJ_M2:
@@ -260,10 +260,13 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
                             o["zekerheid"] = "midden"
                         alle.append(o); gemaakt = True
             if md.sum() * mpp*mpp >= 0.5*MIN_PV_M2:
-                kk = max(3, int(round(PV_CLUSTER_M/mpp)))
+                # kleine kernel: paneelrijen sluiten wel aan, een schaduwstrook op 0,5 m niet
+                kk = max(3, int(round(0.4/mpp)))
                 veld = cv2.morphologyEx(md.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((kk, kk), np.uint8)) > 0
                 veld &= omhoog
                 for deel in comps(veld, close=0):
+                    if not _is_paneelkleur(L, B, deel & md, Lr, Br):
+                        continue
                     o = maak(deel, "zonnepaneel", "ahn+beeld", "hoog", "paneelveld (omhullende)")
                     if o and o["m2"] >= MIN_PV_M2 and o["m2"] <= MAX_AANDEEL*vlak.area:
                         alle.append(o); gemaakt = True
@@ -274,8 +277,10 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
             gebruikt |= zone
 
         # ---- 2) alleen beeld: panelen (donker, blauwig, geen schaduw)
-        pv_kand = donker & ~schaduw & ~gebruikt & (blauwig | (L < 55))
+        pv_kand = donker & ~schaduw & ~gebruikt
         for cm in comps(pv_kand, close=max(2, int(PV_CLUSTER_M/mpp/5))):
+            if not _is_paneelkleur(L, B, cm, Lr, Br):
+                continue
             o = maak(cm, "zonnepaneel", "beeld", "midden" if nd is None else "laag",
                      "alleen luchtfoto (geen hoogte gemeten)")
             if o and o["m2"] >= MIN_PV_M2 and o["extent"] >= 0.55 and o["m2"] <= MAX_AANDEEL*vlak.area:
@@ -299,6 +304,16 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
             alle.append(o)
 
     return _voeg_pv_samen(alle)
+
+
+def _is_paneelkleur(L, B, mask, Lr, Br):
+    """Panelen: als geheel blauwig, of als geheel duidelijk donker t.o.v. het dak
+    (donkergrijze/zwarte panelen). Beoordeeld op de mediaan van het hele veld,
+    niet per pixel (randen, reflecties en frames wijken per pixel af)."""
+    if not mask.any():
+        return False
+    mb = float(np.median(B[mask])); ml = float(np.median(L[mask]))
+    return (mb - Br) < -3.0 or ml < Lr - max(30.0, 0.3*Lr)
 
 
 def _voeg_pv_samen(objs):
