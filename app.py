@@ -233,7 +233,7 @@ class SpecbladReq(BaseModel):
     vision: bool = True         # Claude Vision voor objecten + dakvlakken
     ahn: bool = True            # AHN-hoogtecheck (opsteek + afschot)
     formaat: str = "pdf"        # "pdf" of "json"
-    versie: int = 1             # 2 = dakvlakken uit 3D BAG LoD 2.2 + objecten op hoogte/kleur/zon; 1 = oud
+    versie: int = 2             # 2 = dakvlakken uit 3D BAG LoD 2.2 + objecten op hoogte/kleur/zon; 1 = oud
 
 
 @app.post("/specblad")
@@ -297,7 +297,7 @@ def specblad(req: SpecbladReq):
                 k = objecten.keur(ov_img, objecten_rd, meta_lf["frame"])
                 for i, o in enumerate(objecten_rd, 1):
                     if i in k["oordeel"]:
-                        o["keuring"] = k["oordeel"][i]
+                        o["keuring"] = _type_check(k["oordeel"][i], o)
                 # 'gemist' van de keurmeester alleen overnemen met hoogtebewijs in AHN
                 if dsm is not None:
                     for g in k.get("gemist", []):
@@ -435,6 +435,19 @@ def _verrijk_json(spec):
             spec["beeld_onderschrift"] = dv.get("onderschrift", "")
         except Exception as e:
             spec["beeld_fout"] = str(e)
+
+
+def _type_check(oordeel, o):
+    """Het type van de keurmeester moet passen bij de gemeten maat: een 'lichtkoepel'
+    van 15 m² is een lichtstraat; een 'lichtstraat' van 1,5 m² een koepel."""
+    t = (oordeel or {}).get("type")
+    afm = o.get("afm_m") or (0, 0)
+    m2 = o.get("m2") or 0
+    if t == "lichtkoepel" and (m2 > 5 or max(afm) > 2.5):
+        oordeel = dict(oordeel, type="lichtstraat")
+    elif t == "lichtstraat" and m2 < 3 and max(afm) <= 2.2:
+        oordeel = dict(oordeel, type="lichtkoepel")
+    return oordeel
 
 
 def _ndsm_punt(dsm, vlakken, union, rd):

@@ -245,22 +245,33 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
         for cm in comps(hoog, close=1):
             zone = cv2.dilate(cm.astype(np.uint8), k5, iterations=max(1, int(0.4/mpp))) > 0
             zone &= dak
-            ml = licht & zone
-            md = donker & zone & ~schaduw
-            if ml.sum() > 0.2*zone.sum():
-                o = maak(ml if ml.sum() > 20 else zone, "lichtstraat", "ahn+beeld", "hoog")
-                if o:
-                    o["type"] = soort_licht(ml, o)
-                    if o["type"] == "installatie":
-                        o["zekerheid"] = "midden"
-            elif md.sum() > 0.3*zone.sum() and (float(np.median(B[md])) - Br < -4 or float(np.median(L[md])) < 55):
+            # alleen wat echt omhoog staat telt mee voor de vorm (geen schaduw/dakhuid ernaast)
+            omhoog = zone & (nd >= H_VLAK)
+            ml = licht & omhoog
+            md = donker & omhoog & (((B - Br) < -4) | (L < 55))
+            gemaakt = False
+            # één hoogteblok kan meerdere objecten bevatten (paneelveld naast lichtstraat): splits op kleur
+            if ml.sum() * mpp*mpp >= 0.5*MIN_OBJ_M2:
+                for deel in comps(ml, close=1):
+                    o = maak(deel, "lichtstraat", "ahn+beeld", "hoog")
+                    if o and o["m2"] >= MIN_OBJ_M2 and o["m2"] <= MAX_AANDEEL*vlak.area:
+                        o["type"] = soort_licht(deel, o)
+                        if o["type"] == "installatie":
+                            o["zekerheid"] = "midden"
+                        alle.append(o); gemaakt = True
+            if md.sum() * mpp*mpp >= 0.5*MIN_PV_M2:
                 kk = max(3, int(round(PV_CLUSTER_M/mpp)))
                 veld = cv2.morphologyEx(md.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((kk, kk), np.uint8)) > 0
-                o = maak(veld & zone, "zonnepaneel", "ahn+beeld", "hoog", "paneelveld (omhullende)")
-            else:
+                veld &= omhoog
+                for deel in comps(veld, close=0):
+                    o = maak(deel, "zonnepaneel", "ahn+beeld", "hoog", "paneelveld (omhullende)")
+                    if o and o["m2"] >= MIN_PV_M2 and o["m2"] <= MAX_AANDEEL*vlak.area:
+                        alle.append(o); gemaakt = True
+            if not gemaakt:
                 o = maak(cm, "installatie", "ahn", "midden")
-            if o and o["m2"] >= MIN_OBJ_M2 and o["m2"] <= MAX_AANDEEL*vlak.area:
-                alle.append(o); gebruikt |= zone
+                if o and o["m2"] >= MIN_OBJ_M2 and o["m2"] <= MAX_AANDEEL*vlak.area:
+                    alle.append(o)
+            gebruikt |= zone
 
         # ---- 2) alleen beeld: panelen (donker, blauwig, geen schaduw)
         pv_kand = donker & ~schaduw & ~gebruikt & (blauwig | (L < 55))
