@@ -36,6 +36,9 @@ MIN_PV_M2 = 1.5
 PV_CLUSTER_M = 0.8
 MAX_AANDEEL = 0.20      # één object > 20% van het dakvlak = vrijwel zeker fout
 KOEPEL_MAX_ZIJDE = 2.2
+LOKAAL_M = 8.0           # venster voor het lokale dakoppervlak (objecten smaller dan dit)
+MIN_BREED_M = 0.6       # smaller dan 60 cm = randeffect / kabelgoot, geen object
+PV_VELD_M = 1.6         # paneelrijen tot zoveel meter uit elkaar = één veld
 
 
 # ------------------------------------------------------------- frame-hulp
@@ -128,6 +131,27 @@ def _ndsm_in_beeld(dsm, dakvlak, W, H, f):
         keep = np.abs(resid) < 0.15
     if coef is None:
         return None
+    # LOKAAL dakoppervlak i.p.v. één vlak: een groot plat dak heeft vaak meerdere
+    # afschotrichtingen (kilgoten). Morfologische opening (venster LOKAAL_M) volgt
+    # hellingen en kilgoten, en haalt alleen bulten weg die smaller zijn dan het venster.
+    vol = np.zeros((Hc, Wc), np.uint8)
+    for p in getattr(dakvlak, "geoms", [dakvlak]):
+        pts = np.array([[(x-minx)/res, (maxy-y)/res] for x, y in p.exterior.coords], np.int32)
+        cv2.fillPoly(vol, [pts], 1)
+    binnen = (vol > 0) & ~np.isnan(grid)
+    if binnen.any():
+        # cellen ver onder het dak (gevelval/maaiveld aan de rand) horen er niet bij
+        med = float(np.median(grid[binnen]))
+        binnen &= grid > med - 1.0
+        binnen = cv2.erode(binnen.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    k = max(3, int(round(LOKAAL_M/res)) | 1)
+    ker = np.ones((k, k), np.uint8)
+    G = np.where(binnen, grid, 1e4).astype(np.float32)
+    E = cv2.erode(G, ker)
+    E = np.where(binnen, E, -1e4).astype(np.float32)
+    grond = cv2.dilate(E, ker)
+    vlak_fit = coef[0]*(minx + (np.arange(Wc)+0.5)*res)[None, :] + coef[1]*(maxy - (np.arange(Hc)+0.5)*res)[:, None] + coef[2]
+    grond = np.where(binnen & (grond > -1e3), grond, vlak_fit).astype(np.float32)
     # beeldpixels -> RD -> DSM-cel
     yy, xx = np.mgrid[0:H, 0:W]
     xf, yf = (xx+0.5)/W, (yy+0.5)/H
@@ -135,7 +159,7 @@ def _ndsm_in_beeld(dsm, dakvlak, W, H, f):
     RY = f["o"][1] + xf*f["du"][1] + yf*f["dv"][1]
     ci = np.clip(((RX-minx)/res).astype(int), 0, Wc-1)
     ri = np.clip(((maxy-RY)/res).astype(int), 0, Hc-1)
-    nd = grid[ri, ci] - (coef[0]*RX + coef[1]*RY + coef[2])
+    nd = grid[ri, ci] - grond[ri, ci]
     return nd.astype(np.float32), coef
 
 
@@ -268,7 +292,7 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
             if ml.sum() * mpp*mpp >= 0.5*MIN_OBJ_M2:
                 for deel in comps(ml, close=1):
                     o = maak(deel, "lichtstraat", "ahn+beeld", "hoog")
-                    if o and o["m2"] >= MIN_OBJ_M2 and o["m2"] <= MAX_AANDEEL*vlak.area:
+                    if o and o["m2"] >= MIN_OBJ_M2 and o["m2"] <= MAX_AANDEEL*vlak.area and min(o["afm_m"]) >= MIN_BREED_M:
                         o["type"] = soort_licht(deel, o)
                         if o["type"] == "installatie":
                             o["zekerheid"] = "midden"
@@ -282,11 +306,11 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
                     if not _is_paneelkleur(L, B, deel & md, Lr, Br):
                         continue
                     o = maak(deel, "zonnepaneel", "ahn+beeld", "hoog", "paneelveld (omhullende)")
-                    if o and o["m2"] >= MIN_PV_M2 and o["m2"] <= MAX_AANDEEL*vlak.area:
+                    if o and o["m2"] >= MIN_PV_M2 and o["m2"] <= MAX_AANDEEL*vlak.area and min(o["afm_m"]) >= MIN_BREED_M:
                         alle.append(o); gemaakt = True
             if not gemaakt:
                 o = maak(cm, "installatie", "ahn", "midden")
-                if o and o["m2"] >= MIN_OBJ_M2 and o["m2"] <= MAX_AANDEEL*vlak.area:
+                if o and o["m2"] >= MIN_OBJ_M2 and o["m2"] <= MAX_AANDEEL*vlak.area and min(o["afm_m"]) >= MIN_BREED_M:
                     alle.append(o)
             gebruikt |= zone
 
@@ -308,7 +332,7 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
                 M = np.float32([[1, 0, dx], [0, 1, dy]])
                 noord |= cv2.warpAffine(cm.astype(np.uint8), M, (W, H),
                                         flags=cv2.INTER_NEAREST, borderValue=0) > 0
-            eigen_schaduw = (noord & ~cm & donker).sum() > 0.15*cm.sum()
+            eigen_schaduw = (noord & ~cm & donker).sum() > 0.05*cm.sum()
             if not eigen_schaduw:
                 continue                          # vlakke lichte vlek (grind, coating, reflectie): weg
             o = maak(cm, "lichtstraat", "beeld", "midden", "licht object met eigen schaduw (verhoogd)")
@@ -337,7 +361,7 @@ def _voeg_pv_samen(objs):
     rest = [o for o in objs if o["type"] != "zonnepaneel"]
     groepen = []
     for o in pv:
-        p = Polygon(o["poly_rd"]).buffer(PV_CLUSTER_M/2)
+        p = Polygon(o["poly_rd"]).buffer(PV_VELD_M/2)
         hit = [g for g in groepen if g["buf"].intersects(p) and g["as"] == o.get("dakvlak_as")]
         if hit:
             g = hit[0]
@@ -357,6 +381,10 @@ def _voeg_pv_samen(objs):
         n["poly_rd"] = [list(p) for p in list(rect.exterior.coords)[:4]]
         n["m2"] = round(sum(o["m2"] for o in g["leden"]), 2)      # paneeloppervlak, niet de omhullende
         n["rd"] = tuple(rect.centroid.coords[0])
+        bb = rect.exterior.coords
+        z1 = math.dist(bb[0], bb[1]); z2 = math.dist(bb[1], bb[2])
+        n["afm_m"] = (round(max(z1, z2), 2), round(min(z1, z2), 2))
+        n["m2_omhullend"] = round(rect.area, 2)
         n["omschrijving"] = f"veld van {len(g['leden'])} delen"
         uit.append(n)
     return rest + uit
