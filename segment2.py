@@ -78,14 +78,21 @@ def hoofdas(poly):
     return math.degrees(math.atan2(e[1], e[0]))
 
 
-def uitgelijnde_rechthoek(pts_rd, as_graden):
-    """Kleinste rechthoek om de punten, met zijden evenwijdig aan de dakvlak-as."""
+def uitgelijnde_rechthoek(pts_rd, as_graden, trim=0.0):
+    """Kleinste rechthoek om de punten, met zijden evenwijdig aan de dakvlak-as.
+    trim > 0: negeer die fractie uitschieters aan elke kant (losse pixels, dunne
+    uitlopers zoals een naad of kabel die aan het object vastzit)."""
     if len(pts_rd) < 3:
         return None
     mp = MultiPoint(pts_rd)
     c = mp.centroid
     r = _rot(mp, -as_graden, origin=c)
-    minx, miny, maxx, maxy = r.bounds
+    if trim > 0 and len(pts_rd) >= 50:
+        xs = np.array([p.x for p in r.geoms]); ys = np.array([p.y for p in r.geoms])
+        minx, maxx = np.percentile(xs, [100*trim, 100*(1-trim)])
+        miny, maxy = np.percentile(ys, [100*trim, 100*(1-trim)])
+    else:
+        minx, miny, maxx, maxy = r.bounds
     if maxx - minx < 1e-3 or maxy - miny < 1e-3:
         return None
     b = Polygon([(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy)])
@@ -203,14 +210,21 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
                     continue
                 yield lab_ == i
 
+        k_smal = np.ones((max(3, int(round(0.3/mpp))),)*2, np.uint8)
+
         def maak(mask, typ, bron, zek, oms=""):
+            # smalle uitlopers (< 30 cm: naad, kabel, dakrandlijn) horen niet bij de vorm
+            if mask.sum() * mpp*mpp > 2.0:
+                schoon = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_OPEN, k_smal) > 0
+                if schoon.sum() > 0.5*mask.sum():
+                    mask = schoon
             ys, xs = np.where(mask)
             if xs.size < 8:
                 return None
             # randpunten volstaan voor de rechthoek
             sel = np.linspace(0, xs.size-1, min(xs.size, 4000)).astype(int)
             pts = [_rd_of(float(xs[i])+0.5, float(ys[i])+0.5, W, H, frame) for i in sel]
-            rect = uitgelijnde_rechthoek(pts, as_g)
+            rect = uitgelijnde_rechthoek(pts, as_g, trim=0.005)
             if rect is None:
                 return None
             area_mask = xs.size * mpp*mpp
@@ -318,7 +332,8 @@ def _is_paneelkleur(L, B, mask, Lr, Br):
 
 def _voeg_pv_samen(objs):
     """Losse paneelrechthoeken die (bijna) raken samenvoegen tot één veld per dakvlak-as."""
-    pv = [o for o in objs if o["type"] == "zonnepaneel"]
+    # alleen goed gevormde delen samenvoegen; rafelige vlekken blijven los (en vallen weg)
+    pv = [o for o in objs if o["type"] == "zonnepaneel" and o.get("extent", 1) >= 0.6]
     rest = [o for o in objs if o["type"] != "zonnepaneel"]
     groepen = []
     for o in pv:
