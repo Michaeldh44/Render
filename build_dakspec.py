@@ -113,8 +113,11 @@ def split_dakvlakken(footprint, rects, min_area=5.0):
     return [main] + exts
 
 
-def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, objecten=None, vision_status=None, dakvlakken_expliciet=None, meldingen=None, afschot=None):
+def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, objecten=None, vision_status=None, dakvlakken_expliciet=None, meldingen=None, afschot=None, dakvlak_info=None):
     """
+    dakvlak_info : [v2] per dakvlak (zelfde volgorde) info uit 3D BAG LoD 2.2:
+                 label, m2, hoogte_nap, helling_deg, plat, afschot_pct, randen, max_sprong_m
+
     footprints : list[shapely Polygon] in RD (meters)
     dakvlakken_expliciet : expliciete deelvlak-polygonen (uit Vision-splitsing);
                  overschrijft de standaard pand-splitsing.
@@ -174,7 +177,10 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
     # --- hoogte / daktype (3D BAG) ---
     dh = enrich.get("dakhoogte_m")
     dak_type = (enrich.get("dak_type") or "").lower()
-    if "is_plat" in enrich:
+    if dakvlak_info:
+        m2p = sum(d["m2"] for d in dakvlak_info if d.get("plat"))
+        is_plat = m2p >= 0.5 * (sum(d["m2"] for d in dakvlak_info) or 1)
+    elif "is_plat" in enrich:
         is_plat = enrich["is_plat"]
     else:
         is_plat = ("horizontal" in dak_type or "plat" in dak_type
@@ -187,9 +193,26 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
     dakgegevens = [
         {"label": "Omtrek dakrand (rondom)", "waarde": f"{perim_m1:.2f}",
          "eenheid": "m\u00b9", "maatklasse": "A"},
-        {"label": "Aantal dakvlakken (panden in blok)", "waarde": str(len(parts)),
-         "eenheid": "st"},
+        {"label": ("Aantal dakvlakken (3D BAG LoD 2.2)" if dakvlak_info else "Aantal dakvlakken (panden in blok)"),
+         "waarde": str(len(parts)), "eenheid": "st", **({"maatklasse": "B"} if dakvlak_info else {})},
     ]
+    if dakvlak_info:
+        tot = {k: round(sum(d["randen"].get(k, 0) for d in dakvlak_info), 1)
+               for k in ("dakrand", "rand_lager", "opgaand", "opgaand_buur", "grens_buur")}
+        rij = lambda lab, v: dakgegevens.append({"label": lab, "waarde": f"{v:.1f}", "eenheid": "m\u00b9", "maatklasse": "B"})
+        rij("Dakrand vrij (gevel) \u2014 3D BAG", tot["dakrand"])
+        if tot["rand_lager"]:
+            rij("Dakrand boven lager dakvlak", tot["rand_lager"])
+        if tot["opgaand"]:
+            rij("Opgaand werk tegen hoger dakdeel", tot["opgaand"])
+        if tot["opgaand_buur"]:
+            rij("Opgaand werk tegen hoger buurpand", tot["opgaand_buur"])
+        if tot["grens_buur"]:
+            rij("Grens met buurpand (scheidingsmuur)", tot["grens_buur"])
+        spr = [d["max_sprong_m"] for d in dakvlak_info if d.get("max_sprong_m")]
+        if spr:
+            dakgegevens.append({"label": "Grootste hoogteverschil tussen dakvlakken",
+                                "waarde": f"{max(spr):.2f}", "eenheid": "m", "maatklasse": "B"})
     if panddata.get("bouwjaar"):
         dakgegevens.append({"label": "Bouwjaar (BAG)", "waarde": str(panddata["bouwjaar"]),
                             "eenheid": "", "maatklasse": "A"})
@@ -216,11 +239,12 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
                             "waarde": f"~ {ol}", "eenheid": "mm", "maatklasse": "B"})
     if not oh and ol is None:
         dakgegevens.append({"label": "Opstand / dakrand (hoogte)",
-                            "waarde": "n.t.b. (3D BAG niet beschikbaar; typisch 150\u2013300 mm)",
+                            "waarde": ("niet uit open data te bepalen \u2014 inmeten (typisch 150\u2013300 mm)" if dakvlak_info
+                                       else "n.t.b. (3D BAG niet beschikbaar; typisch 150\u2013300 mm)"),
                             "eenheid": "", "maatklasse": "C"})
     if afschot and afschot.get("mm_per_m") is not None:
         dakgegevens.append(
-            {"label": "Afschot (AHN)",
+            {"label": f"Afschot ({afschot['bron']})" if afschot.get("bron") else "Afschot (AHN)",
              "waarde": f"~ {afschot['mm_per_m']:.1f} mm/m ({afschot['procent']:.2f}%)",
              "eenheid": "", "maatklasse": "B"})
     else:
@@ -282,7 +306,15 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
                 ],
                 "totaal_m2": round(opp_schuin, 2),
             }
-            if (not is_plat and opp_schuin) else
+            if (not is_plat and opp_schuin and not dakvlak_info) else
+            {   # v2: per dakvlak uit 3D BAG (werkelijk oppervlak, hellend gecorrigeerd)
+                "per_dakvlak": [{"label": (f"Dakvlak {d['label']} \u2014 {d['hoogte_nap']:.2f} m NAP, "
+                                           + (f"plat, afschot {d['afschot_pct']:.1f}%" if d.get("plat") and d.get("afschot_pct") is not None
+                                              else ("plat" if d.get("plat") else f"hellend {d['helling_deg']:.0f}\u00b0"))),
+                                 "m2": d["m2"]} for d in dakvlak_info],
+                "totaal_m2": round(sum(d["m2"] for d in dakvlak_info), 2),
+            }
+            if dakvlak_info else
             {   # plat: grondvlak = dakoppervlak
                 "per_dakvlak": [{"label": f"Dakvlak {dv['label']} (plat)", "m2": dv["oppervlak_m2"]}
                                 for dv in dakvlakken],
@@ -290,6 +322,9 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
             }
         ),
         "materiaal": opbouw,
+        "dakvlakken_info": [{k: d.get(k) for k in ("label", "m2", "m2_plat", "hoogte_nap", "helling_deg", "plat",
+                                                   "afschot_pct", "randen", "max_sprong_m")}
+                            for d in (dakvlak_info or [])] or None,
         "dakvisual": {
             "type": "placeholder",
             "onderschrift": ("DAKVISUAL \u2014 luchtfoto-uitsnede (PDOK) van het meetmodel "
@@ -301,7 +336,7 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
 
 
 def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=None,
-                 vision_status=None, dakvlakken=None, meldingen=None, afschot=None):
+                 vision_status=None, dakvlakken=None, meldingen=None, afschot=None, dakvlak_info=None):
     """OVERZICHT + één pagina per dakvlak. `dakvlakken` = expliciete deelvlak-
     polygonen (uit Vision-splitsing); zonder dat valt hij terug op de panden.
     Geeft list van {spec, footprint, objecten, label, dakvlakken}."""
@@ -314,17 +349,19 @@ def bouw_paginas(footprints, enrich=None, panddata=None, meta=None, objecten=Non
     ov = build(footprints, enrich=enrich, panddata=panddata, meta=meta,
                objecten=objecten, vision_status=vision_status,
                dakvlakken_expliciet=(polys if dakvlakken else None), meldingen=meldingen,
-               afschot=afschot)
+               afschot=afschot, dakvlak_info=(dakvlak_info if dakvlakken else None))
     ov["pagina_label"] = "OVERZICHT"
     paginas = [{"spec": ov, "footprint": union, "objecten": objecten,
                 "dakvlakken": gelabeld, "label": "A"}]
 
     if len(polys) > 1:
-        for L, poly in gelabeld:
+        for idx, (L, poly) in enumerate(gelabeld):
             obj_i = [o for o in objecten
                      if o.get("rd") and poly.buffer(0.5).contains(Point(*o["rd"]))]
+            info_i = [dict(dakvlak_info[idx], label=L)] if (dakvlak_info and idx < len(dakvlak_info)) else None
             sp = build([poly], enrich=enrich, panddata=panddata, meta=meta,
-                       objecten=obj_i, vision_status=vision_status)
+                       objecten=obj_i, vision_status=vision_status,
+                       dakvlakken_expliciet=([poly] if info_i else None), dakvlak_info=info_i)
             sp["pagina_label"] = f"DAKVLAK {L}"
             sp["meta"]["regel"] = f"Dakvlak {L} \u00b7 {sp['oppervlakte']['totaal_m2']:.0f} m\u00b2"
             paginas.append({"spec": sp, "footprint": poly, "objecten": obj_i,

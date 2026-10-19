@@ -30,6 +30,8 @@ import objecten
 import segment
 import ahn
 import dossier
+import dakvlakken3d
+import segment2
 
 app = FastAPI(title="dakscan", version="0.1")
 
@@ -231,6 +233,7 @@ class SpecbladReq(BaseModel):
     vision: bool = True         # Claude Vision voor objecten + dakvlakken
     ahn: bool = True            # AHN-hoogtecheck (opsteek + afschot)
     formaat: str = "pdf"        # "pdf" of "json"
+    versie: int = 1             # 2 = dakvlakken uit 3D BAG LoD 2.2 + objecten op hoogte/kleur/zon; 1 = oud
 
 
 @app.post("/specblad")
@@ -254,9 +257,55 @@ def specblad(req: SpecbladReq):
 
         union = unary_union([f.buffer(0) for f in footprints])
 
+        # 0) [v2] dakvlakken + randtypering uit 3D BAG LoD 2.2 (geen AI, herhaalbaar)
+        dv3, vl3 = None, None
+        if req.versie >= 2:
+            try:
+                dv3 = dakvlakken3d.haal(pandids, union)
+            except Exception as e:
+                dv3 = {"status": f"fout: {e}", "dakvlakken": []}
+            if dv3.get("status") == "ok" and dv3.get("dakvlakken"):
+                vl3 = dv3["dakvlakken"]
+                # de oude 'opstand' uit de 3D BAG-hoogteverdeling was in werkelijkheid het
+                # hoogteverschil tussen dakvlakken -> weg; opstandhoogte is niet uit open data te halen
+                enrich["opstand_hoog_mm"] = None
+                enrich["opstand_laag_mm"] = None
+
         # 1) overzichtsfoto + segmentatie (contouren) + Vision (labels)
         objecten_rd, vision_status, dakvlak_polys = [], "luchtfoto uit", None
-        if req.luchtfoto:
+        if req.luchtfoto and req.versie >= 2:
+            ov_img = f"/tmp/{req.ref}_ov.png"
+            meta_lf = lf.haal(union.bounds, ov_img, footprint=union)
+            dsm = None
+            if req.ahn:
+                try:
+                    dsm = ahn.haal_dsm(union.bounds)
+                    if not dsm or dsm.get("grid") is None:
+                        dsm = None
+                except Exception:
+                    dsm = None
+            try:
+                objecten_rd = segment2.detecteer(ov_img, meta_lf["frame"], union, vl3, dsm)
+            except Exception as e:
+                objecten_rd = []
+                print(f"segment2 fout: {e}")
+            if vl3:
+                dakvlak_polys = [v["poly"] for v in vl3]
+            vision_status = ("v2: hoogte(AHN)+kleur+zon" if dsm else "v2: kleur+zon (geen AHN)") + \
+                            f" | dakvlakken: {dv3.get('status') if dv3 else 'uit'}"
+            if req.vision and objecten_rd:
+                k = objecten.keur(ov_img, objecten_rd, meta_lf["frame"])
+                for i, o in enumerate(objecten_rd, 1):
+                    if i in k["oordeel"]:
+                        o["keuring"] = k["oordeel"][i]
+                # 'gemist' van de keurmeester alleen overnemen met hoogtebewijs in AHN
+                if dsm is not None:
+                    for g in k.get("gemist", []):
+                        if g.get("rd") and _ndsm_punt(dsm, vl3, union, g["rd"]) >= 0.3:
+                            g["bron"] = "keurmeester+ahn"
+                            objecten_rd.append(g)
+                vision_status += f" | keuring: {k['keuring']}"
+        elif req.luchtfoto:
             ov_img = f"/tmp/{req.ref}_ov.png"
             meta_lf = lf.haal(union.bounds, ov_img, footprint=union)
             contouren = segment.segmenteer(ov_img, meta_lf["frame"], footprint=union)
@@ -281,6 +330,9 @@ def specblad(req: SpecbladReq):
                 objecten_rd = segment.combineer(contouren, [])
                 vision_status = "vision uit (verzoek)"
 
+        if vl3 and not dakvlak_polys:
+            dakvlak_polys = [v["poly"] for v in vl3]
+
         # verwijder overbodige verzamelvakken (scheve box over losse panelen e.d.)
         objecten_rd = bd.dedup_objecten(objecten_rd)
 
@@ -296,7 +348,16 @@ def specblad(req: SpecbladReq):
         # 2b) AHN-hoogtecheck: onafhankelijke bron (opsteek per object + afschot)
         afschot = None
         ahn_status = "uit"
-        if req.ahn:
+        if req.versie >= 2 and vl3:
+            hoofd = max(vl3, key=lambda v: v["m2"])
+            if hoofd.get("afschot_pct") is not None:
+                afschot = {"mm_per_m": hoofd["afschot_mm_per_m"], "procent": hoofd["afschot_pct"],
+                           "promille": hoofd["afschot_mm_per_m"], "bron": "3D BAG dakvlak " + hoofd["label"]}
+                dak_feiten["afschot"] = afschot
+                _dos["dak"] = dak_feiten
+                dossier.bewaar(_dos)
+            ahn_status = "v2: per dakvlak (3D BAG)"
+        elif req.ahn:
             a = ahn.analyse(union, view, bounds=union.bounds)
             ahn_status = a["status"]
             if a["status"] == "ok":
@@ -315,7 +376,8 @@ def specblad(req: SpecbladReq):
         paginas = bd.bouw_paginas(footprints, enrich=enrich, panddata=panddata,
                                   meta=meta, objecten=view,
                                   vision_status=vision_status, dakvlakken=dakvlak_polys,
-                                  meldingen=meld, afschot=afschot)
+                                  meldingen=meld, afschot=afschot,
+                                  dakvlak_info=(vl3 if (vl3 and dakvlak_polys) else None))
 
         # 3) per pagina de luchtfoto met objecten/omtrek
         if req.luchtfoto:
@@ -373,6 +435,24 @@ def _verrijk_json(spec):
             spec["beeld_onderschrift"] = dv.get("onderschrift", "")
         except Exception as e:
             spec["beeld_fout"] = str(e)
+
+
+def _ndsm_punt(dsm, vlakken, union, rd):
+    """Hoogte (m) van een punt boven het lokale dak: DSM min de mediaan van het
+    dakvlak waarin het punt ligt (of het hele pand). Fout/geen data -> 0."""
+    try:
+        import numpy as np
+        from shapely.geometry import Point
+        pt = Point(*rd)
+        vlak = next((v["poly"] for v in (vlakken or []) if v["poly"].contains(pt)), union)
+        grid, (minx, miny, maxx, maxy), res = dsm["grid"], dsm["bbox"], dsm["res"]
+        c = int((rd[0]-minx)/res); r = int((maxy-rd[1])/res)
+        z = float(grid[r, c])
+        msk = ahn._masker(list(vlak.exterior.coords), dsm)
+        v = grid[msk]; v = v[~np.isnan(v)]
+        return z - float(np.median(v)) if v.size else 0.0
+    except Exception:
+        return 0.0
 
 
 class OordeelReq(BaseModel):
