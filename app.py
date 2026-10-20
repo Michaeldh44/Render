@@ -32,6 +32,7 @@ import ahn
 import dossier
 import dakvlakken3d
 import segment2
+import opstand as opst
 
 app = FastAPI(title="dakscan", version="0.1")
 
@@ -273,9 +274,18 @@ def specblad(req: SpecbladReq):
 
         # 1) overzichtsfoto + segmentatie (contouren) + Vision (labels)
         objecten_rd, vision_status, dakvlak_polys = [], "luchtfoto uit", None
+        versch = None
         if req.luchtfoto and req.versie >= 2:
             ov_img = f"/tmp/{req.ref}_ov.png"
-            meta_lf = lf.haal(union.bounds, ov_img, footprint=union)
+            # dak op de foto uitlijnen op de 3D BAG-geometrie (geen true-ortho: hoge
+            # gebouwen hellen weg, het dak ligt dan tot ~2 m naast de voetafdruk)
+            if vl3:
+                try:
+                    versch = lf.registreer(union.bounds, [v["poly"] for v in vl3] + [union])
+                except Exception as e:
+                    print(f"registratie fout: {e}")
+            meta_lf = lf.haal(union.bounds, ov_img, footprint=union,
+                              verschuiving=versch[:2] if versch else None)
             dsm = None
             if req.ahn:
                 try:
@@ -284,15 +294,44 @@ def specblad(req: SpecbladReq):
                         dsm = None
                 except Exception:
                     dsm = None
+            # zichtbare opstanden: dakvlakken splitsen die 3D BAG als één vlak ziet
+            lijnen, op_info = [], {}
+            if vl3:
+                try:
+                    vl3, lijnen, op_info = opst.verfijn(ov_img, meta_lf["frame"], union, vl3, dsm,
+                                                        None, dv3.get("buren_lijst"))
+                    dakvlakken3d.controleer_ahn(vl3, dsm)
+                except Exception as e:
+                    print(f"opstand fout: {e}")
             try:
                 objecten_rd = segment2.detecteer(ov_img, meta_lf["frame"], union, vl3, dsm)
             except Exception as e:
                 objecten_rd = []
                 print(f"segment2 fout: {e}")
+            n_opst = 0
+            if lijnen and objecten_rd:
+                polys_ = [v["poly"] for v in vl3] if vl3 else []
+                rest = []
+                for o in objecten_rd:
+                    try:
+                        weg = opst.is_opstand(Polygon(o["poly_rd"]), lijnen, polys_, union, o)
+                    except Exception:
+                        weg = False
+                    if weg:
+                        n_opst += 1
+                    else:
+                        rest.append(o)
+                objecten_rd = rest
             if vl3:
                 dakvlak_polys = [v["poly"] for v in vl3]
             vision_status = ("v2: hoogte(AHN)+kleur+zon" if dsm else "v2: kleur+zon (geen AHN)") + \
                             f" | dakvlakken: {dv3.get('status') if dv3 else 'uit'}"
+            if versch and (versch[0] or versch[1]):
+                vision_status += f" | foto uitgelijnd {versch[0]:+.1f}/{versch[1]:+.1f} m"
+            if op_info.get("splitsingen"):
+                vision_status += f" | {len(op_info['splitsingen'])} dakvlak(ken) gesplitst op zichtbare opstand"
+            if n_opst:
+                vision_status += f" | {n_opst} opstand/daktrim-stuk(ken) niet als object geteld"
             if req.vision and objecten_rd:
                 k = objecten.keur(ov_img, objecten_rd, meta_lf["frame"])
                 for i, o in enumerate(objecten_rd, 1):
@@ -387,7 +426,8 @@ def specblad(req: SpecbladReq):
                 fp = p["footprint"]
                 img = f"/tmp/{req.ref}_p{i}.png"
                 mlf = lf.haal(fp.bounds, img, footprint=fp, objecten=p["objecten"],
-                              opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"])
+                              opstand=opstand, label=p["label"], dakvlakken=p["dakvlakken"],
+                              verschuiving=versch[:2] if versch else None)
                 p["spec"]["dakvisual"].update({
                     "type": "image", "bestand": img,
                     "onderschrift": f"PDOK-luchtfoto ({mlf['layer']}) met meet-omtrek"

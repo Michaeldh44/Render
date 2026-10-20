@@ -82,11 +82,62 @@ def _angle(geom):
             else math.atan2(e1[1], e1[0]))
 
 
-def haal(bounds, outfile, footprint=None, objecten=None, opstand=None,
-         label="A", dakvlakken=None, stand_in=False, afschot=None):
+def registreer(bounds, polys, max_m=3.0):
+    """Schat hoeveel het dak op de luchtfoto verschoven ligt t.o.v. de 3D BAG-
+    geometrie. PDOK-ortho's zijn geen 'true ortho': hoge gebouwen hellen weg van
+    het opnamepunt, waardoor het dak tot ~2 m naast de voetafdruk valt.
+    Methode: randen in de foto (Sobel) correleren met de rasterde dakvlakgrenzen.
+    -> (dx_m, dy_m, kwaliteit) of None"""
+    import numpy as np
+    import cv2
     b = _padded(bounds, 0.28)
     W0, H0 = _dims(b)
-    img0 = _standin(W0, H0) if stand_in else _getmap(b, W0, H0)
+    img = np.asarray(_getmap(b, W0, H0).convert("L"), dtype=np.float32)
+    px = (b[2] - b[0]) / W0
+    gx = cv2.Sobel(img, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(img, cv2.CV_32F, 0, 1, ksize=3)
+    G = np.sqrt(gx*gx + gy*gy)
+    G = np.minimum(G / (np.percentile(G, 99) or 1.0), 1.0)
+    T = np.zeros((H0, W0), np.uint8)
+    w = max(2, int(round(0.25 / px)))
+    for poly in polys:
+        for p in getattr(poly, "geoms", [poly]):
+            if p.geom_type != "Polygon":
+                continue
+            for ring in [p.exterior] + list(p.interiors):
+                pts = np.array([[(x-b[0])/px, (b[3]-y)/px] for x, y in ring.coords], np.int32)
+                cv2.polylines(T, [pts], True, 1, w)
+    ys, xs = np.nonzero(T)
+    if xs.size < 50:
+        return None
+    R = int(max_m / px)
+    x0, x1, y0, y1 = xs.min(), xs.max(), ys.min(), ys.max()
+    Gp = cv2.copyMakeBorder(G, R, R, R, R, cv2.BORDER_CONSTANT, value=0)
+    crop = Gp[y0:y1 + 2*R + 1, x0:x1 + 2*R + 1]
+    tmpl = T[y0:y1 + 1, x0:x1 + 1].astype(np.float32)
+    res = cv2.matchTemplate(crop, tmpl, cv2.TM_CCORR)
+    ref = float(res[R, R])
+    iy, ix = np.unravel_index(int(np.argmax(res)), res.shape)
+    best = float(res[iy, ix])
+    dx_px, dy_px = ix - R, iy - R
+    kw = best / ref if ref > 0 else 0.0
+    if kw < 1.10 or math.hypot(dx_px, dy_px)*px < 0.15:
+        return (0.0, 0.0, round(kw, 2))
+    if abs(dx_px) >= R or abs(dy_px) >= R:          # tegen de zoekgrens: onbetrouwbaar
+        return (0.0, 0.0, round(kw, 2))
+    return (round(dx_px*px, 2), round(-dy_px*px, 2), round(kw, 2))
+
+
+def haal(bounds, outfile, footprint=None, objecten=None, opstand=None,
+         label="A", dakvlakken=None, stand_in=False, afschot=None, verschuiving=None):
+    b = _padded(bounds, 0.28)
+    W0, H0 = _dims(b)
+    if verschuiving and (verschuiving[0] or verschuiving[1]):
+        # haal het beeld verschoven op, zodat het dak precies op de 3D BAG-geometrie valt
+        dx, dy = verschuiving[0], verschuiving[1]
+        img0 = _standin(W0, H0) if stand_in else _getmap((b[0]+dx, b[1]+dy, b[2]+dx, b[3]+dy), W0, H0)
+    else:
+        img0 = _standin(W0, H0) if stand_in else _getmap(b, W0, H0)
 
     if footprint is None:
         img0.save(outfile)

@@ -193,7 +193,7 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
     dakgegevens = [
         {"label": "Omtrek dakrand (rondom)", "waarde": f"{perim_m1:.2f}",
          "eenheid": "m\u00b9", "maatklasse": "A"},
-        {"label": ("Aantal dakvlakken (3D BAG LoD 2.2)" if dakvlak_info else "Aantal dakvlakken (panden in blok)"),
+        {"label": ("Aantal dakvlakken (3D BAG LoD 2.2 + luchtfoto)" if dakvlak_info else "Aantal dakvlakken (panden in blok)"),
          "waarde": str(len(parts)), "eenheid": "st", **({"maatklasse": "B"} if dakvlak_info else {})},
     ]
     if dakvlak_info:
@@ -209,6 +209,14 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
             rij("Opgaand werk tegen hoger buurpand", tot["opgaand_buur"])
         if tot["grens_buur"]:
             rij("Grens met buurpand (scheidingsmuur)", tot["grens_buur"])
+        _sch = [d["randen"].get("opstand_scheiding", 0) for d in dakvlak_info]
+        scheid = round(max(sum(_sch) / 2, max(_sch or [0])), 1)
+        if scheid:
+            rij("Opstand tussen dakvlakken (gezien op luchtfoto)", scheid)
+        ctrl = [d["label"] for d in dakvlak_info if d.get("ahn_controle") == "controleren"]
+        if ctrl:
+            dakgegevens.append({"label": "Dakvlak wijkt af van AHN-hoogte \u2014 controleren",
+                                "waarde": ", ".join(ctrl), "eenheid": "", "maatklasse": "C"})
         spr = [d["max_sprong_m"] for d in dakvlak_info if d.get("max_sprong_m")]
         if spr:
             dakgegevens.append({"label": "Grootste hoogteverschil tussen dakvlakken",
@@ -323,7 +331,8 @@ def build(footprints, enrich=None, meta=None, opbouw=None, panddata=None, object
         ),
         "materiaal": opbouw,
         "dakvlakken_info": [{k: d.get(k) for k in ("label", "m2", "m2_plat", "hoogte_nap", "helling_deg", "plat",
-                                                   "afschot_pct", "randen", "max_sprong_m")}
+                                                   "afschot_pct", "randen", "max_sprong_m",
+                                                   "bron", "ahn_afwijking_m", "ahn_controle")}
                             for d in (dakvlak_info or [])] or None,
         "dakvisual": {
             "type": "placeholder",

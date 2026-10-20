@@ -39,15 +39,44 @@ def _first(props, keys):
     return None
 
 
+def _gevraagd_nummer(adres):
+    """(huisnummer, letter) uit de invoer; postcode eerst weghalen."""
+    import re
+    t = re.sub(r"\b\d{4}\s?[A-Za-z]{2}\b", " ", adres)
+    m = re.search(r"\b(\d{1,5})\s*([A-Za-z])?(?![A-Za-z])", t)
+    if not m:
+        return None, None
+    return int(m.group(1)), (m.group(2) or "").upper() or None
+
+
 def geocode(adres):
     r = requests.get(f"{LOCATIESERVER}/free",
-                     params={"q": adres, "fq": "type:adres", "rows": 1},
+                     params={"q": adres, "fq": "type:adres", "rows": 8,
+                             "fl": "id weergavenaam huisnummer huisletter huisnummertoevoeging"},
                      headers=HEADERS, timeout=TIMEOUT)
     r.raise_for_status()
     docs = r.json().get("response", {}).get("docs", [])
     if not docs:
         raise LookupError(f"Geen adres gevonden voor: {adres!r}")
+    # het huisnummer moet kloppen: de vrije zoekopdracht geeft anders stilzwijgend
+    # een ander adres in dezelfde straat (en dan scannen we het verkeerde pand)
+    nr, letter = _gevraagd_nummer(adres)
     doc = docs[0]
+    if nr is not None:
+        def past(d, met_letter):
+            try:
+                if int(d.get("huisnummer")) != nr:
+                    return False
+            except (TypeError, ValueError):
+                return False
+            return (not met_letter) or (str(d.get("huisletter") or "").upper() == letter)
+        kand = [d for d in docs if past(d, bool(letter))] or \
+               ([d for d in docs if past(d, False)] if letter else [])
+        if not kand:
+            sugg = "; ".join(d.get("weergavenaam", "") for d in docs[:3])
+            raise LookupError(f"Huisnummer {nr}{letter or ''} niet gevonden voor {adres!r}. "
+                              f"Bedoelde u: {sugg}?")
+        doc = kand[0]
     look = requests.get(f"{LOCATIESERVER}/lookup",
                         params={"id": doc["id"], "fl": "*"},
                         headers=HEADERS, timeout=TIMEOUT)

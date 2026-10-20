@@ -330,7 +330,8 @@ def haal(pandids, footprint=None):
     buren = buren_uit_bbox(_get_bbox(bounds), eigen)
     vlakken = bouw_dakvlakken(rings, buren)
     lods = sorted(set(v["lod"] for v in vlakken))
-    return {"status": "ok", "dakvlakken": vlakken, "buren": len(buren), "lod": "/".join(lods)}
+    return {"status": "ok", "dakvlakken": vlakken, "buren": len(buren), "lod": "/".join(lods),
+            "buren_lijst": buren}
 
 
 def samenvatting(vlakken):
@@ -344,4 +345,35 @@ def samenvatting(vlakken):
     return {k: round(x, 1) for k, x in t.items()}
 
 
-VERSION = "v2-2026-10-19"
+def controleer_ahn(vlakken, dsm, max_afw=0.5):
+    """Vergelijk elk dakvlak met de AHN-hoogte. Een groot verschil betekent dat
+    3D BAG het dak hier anders indeelt dan het in werkelijkheid ligt (verbouwing,
+    generalisatie) -> dakvlak markeren als 'controleren'."""
+    if not dsm or dsm.get("grid") is None:
+        return vlakken
+    import numpy as np
+    import cv2
+    g, (minx, miny, maxx, maxy), res = dsm["grid"], dsm["bbox"], dsm["res"]
+    for v in vlakken:
+        kern = v["poly"].buffer(-0.5)
+        if kern.is_empty or kern.area < 1.0:
+            kern = v["poly"]
+        m = np.zeros(g.shape, np.uint8)
+        for p in getattr(kern, "geoms", [kern]):
+            if p.geom_type != "Polygon":
+                continue
+            pts = np.array([[(x-minx)/res, (maxy-y)/res] for x, y in p.exterior.coords], np.int32)
+            cv2.fillPoly(m, [pts], 1)
+        z = g[(m > 0) & ~np.isnan(g)]
+        if z.size < 4:
+            continue
+        rows, cols = np.where((m > 0) & ~np.isnan(g))
+        X = minx + (cols+0.5)*res; Y = maxy - (rows+0.5)*res
+        a, b, c = v["fit"]
+        afw = float(np.median(z - (a*X + b*Y + c)))
+        v["ahn_afwijking_m"] = round(afw, 2)
+        v["ahn_controle"] = "ok" if abs(afw) <= max_afw else "controleren"
+    return vlakken
+
+
+VERSION = "v2-2026-10-20"

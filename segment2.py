@@ -35,6 +35,7 @@ MIN_OBJ_M2 = 0.8
 MIN_PV_M2 = 1.5
 PV_CLUSTER_M = 0.8
 MAX_AANDEEL = 0.20      # één object > 20% van het dakvlak = vrijwel zeker fout
+MAX_PV_AANDEEL = 0.90   # een paneelveld mag (bijna) het hele dakvlak beslaan
 KOEPEL_MAX_ZIJDE = 2.2
 LOKAAL_M = 8.0           # venster voor het lokale dakoppervlak (objecten smaller dan dit)
 MIN_BREED_M = 0.6       # smaller dan 60 cm = randeffect / kabelgoot, geen object
@@ -185,6 +186,8 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
 
     alle = []
     dakhuid_totaal = np.zeros((H, W), bool)
+    heel = _poly_mask(footprint, W, H, frame, erode_px=rand_px)
+    ref_dak = tuple(float(np.median(ch[heel])) for ch in (L, A, B)) if heel.sum() > 200 else None
     for vlak in vlakken:
         if vlak.area < 4:
             continue
@@ -196,8 +199,12 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
         dakhuid_totaal |= dak
         rand = vol & ~dak                                          # randstrook (werpt schaduw)
 
-        # referentie: kaal dak = mediaan Lab binnen het dakvlak
+        # referentie: kaal dak = mediaan Lab binnen het dakvlak; ligt dat dakvlak
+        # grotendeels vol panelen (mediaan veel donkerder dan het hele dak), dan de
+        # referentie van het hele dak gebruiken
         Lr, Ar, Br = (float(np.median(ch[dak])) for ch in (L, A, B))
+        if ref_dak is not None and Lr < ref_dak[0] - 12.0:
+            Lr, Ar, Br = ref_dak
         dL = max(22.0, 0.22*Lr)
         donker = dak & (L < Lr - dL)
         licht = dak & (L > Lr + max(22.0, 0.18*(255-Lr)))
@@ -306,7 +313,7 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
                     if not _is_paneelkleur(L, B, deel & md, Lr, Br):
                         continue
                     o = maak(deel, "zonnepaneel", "ahn+beeld", "hoog", "paneelveld (omhullende)")
-                    if o and o["m2"] >= MIN_PV_M2 and o["m2"] <= MAX_AANDEEL*vlak.area and min(o["afm_m"]) >= MIN_BREED_M:
+                    if o and o["m2"] >= MIN_PV_M2 and o["m2"] <= MAX_PV_AANDEEL*vlak.area and min(o["afm_m"]) >= MIN_BREED_M:
                         alle.append(o); gemaakt = True
             if not gemaakt:
                 o = maak(cm, "installatie", "ahn", "midden")
@@ -321,7 +328,7 @@ def detecteer(image_path, frame, footprint, dakvlakken=None, dsm=None):
                 continue
             o = maak(cm, "zonnepaneel", "beeld", "midden" if nd is None else "laag",
                      "alleen luchtfoto (geen hoogte gemeten)")
-            if o and o["m2"] >= MIN_PV_M2 and o["extent"] >= 0.55 and o["m2"] <= MAX_AANDEEL*vlak.area:
+            if o and o["m2"] >= MIN_PV_M2 and o["extent"] >= 0.55 and o["m2"] <= MAX_PV_AANDEEL*vlak.area:
                 alle.append(o); gebruikt |= cm
 
         # ---- 3) alleen beeld: licht + eigen schaduw aan de noordkant = verhoogd = lichtstraat
